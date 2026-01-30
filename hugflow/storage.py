@@ -164,16 +164,10 @@ class StorageManager:
                 log.info("Removing existing symlink")
                 symlink_path.unlink()
 
-            # Create relative symlink for portability
-            # Calculate relative path from symlink to target
-            try:
-                relative_target = os.path.relpath(dataset_path.resolve(), symlink_path.parent.resolve())
-                log.info("Creating relative symlink", relative_target=relative_target)
-                symlink_path.symlink_to(relative_target)
-            except (OSError, ValueError) as e:
-                # Fall back to absolute symlink if relative fails
-                log.warning("Relative symlink failed, using absolute path", error=str(e))
-                symlink_path.symlink_to(dataset_path.resolve())
+            # Create absolute symlink
+            absolute_target = dataset_path.resolve()
+            log.info("Creating absolute symlink", absolute_target=str(absolute_target))
+            symlink_path.symlink_to(absolute_target)
 
             log.info("Processed symlink created successfully")
             return symlink_path
