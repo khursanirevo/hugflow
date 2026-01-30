@@ -5,7 +5,8 @@
 ## Features
 
 - **Ultra-simple YAML** - Just 2 required fields (HF ID + description)
-- **Smart Audio Extraction** - Automatically extracts audio files to separate folder, metadata to JSON
+- **Smart Audio Extraction** - Automatically extracts audio files to MP3 format, metadata to JSON
+- **Optimized Storage** - Audio converted to MP3 with original sample rate preserved, mono channel for safety
 - **No Data Duplication** - Audio bytes removed from JSON, keeping only path references
 - **GitOps Workflow** - Create PR → Auto-download → Auto-merge
 - **Slack Notifications** - Optional real-time progress updates
@@ -19,10 +20,14 @@
 ### 1. Clone & Install
 
 ```bash
+# Install ffmpeg (required for MP3 conversion)
+sudo apt-get install ffmpeg  # Ubuntu/Debian
+brew install ffmpeg          # macOS
+
+# Install hugflow
 git clone https://github.com/your-org/hugflow.git
 cd hugflow
 pip install -e .
-pip install datasets  # Required for dataset loading
 ```
 
 ### 2. Configure
@@ -196,21 +201,24 @@ After download, datasets are organized as:
 ```
 datasets/
 └── org__dataset__subset_X__split_Y__rev_Z/     # Sanitized name
-    ├── audio/                                     # Audio files
-    │   ├── 0_original_filename.wav
+    ├── audio/                                     # Audio files (MP3 format)
+    │   ├── original_filename.mp3                  # Named from audio_filename field
     │   └── ...
     └── json/                                      # Metadata only (no audio bytes!)
         ├── 0.json
-        │   ├── audio: "datasets/.../audio/0_xxx.wav"  # Path reference
+        │   ├── audio: "datasets/.../audio/original_filename.mp3"  # Path reference
         │   ├── text: "Transcript here"
         │   └── ...other metadata
         └── ...
 ```
 
 **Key Points:**
-- Audio files extracted to `audio/` (separate files)
+- Audio files automatically converted to MP3 format (192k bitrate)
+- **Original sample rate preserved** - no quality loss from resampling
+- **Mono channel** for safety (prevents multiprocess crashes with high sample rates)
+- Files named using `audio_filename` field from dataset (or row number if unavailable)
 - JSON contains metadata + path to audio file (NOT embedded bytes)
-- No data duplication - saves ~900MB per 1801 files!
+- Significant space savings: ~900MB → ~330MB per 1801 files
 
 ---
 
@@ -301,6 +309,13 @@ Check that:
 2. `audio_column` in YAML matches the column name in dataset
 3. Check logs for "Audio column exists but no audio files extracted" warning
 
+### MP3 Conversion Issues
+
+If audio conversion fails:
+1. **Ensure ffmpeg is installed**: `ffmpeg -version`
+2. Install ffmpeg: `sudo apt-get install ffmpeg` (Ubuntu/Debian) or `brew install ffmpeg` (macOS)
+3. Check logs for specific conversion errors
+
 ---
 
 ## Development
@@ -360,7 +375,11 @@ gh pr create --title "Add Common Voice Malay" \
 ```
 User PR → GitHub Actions → Self-Hosted Runner → Download Dataset
                                               ↓
-                                         Audio files → audio/
+                                         Extract audio bytes
+                                              ↓
+                                         Convert to MP3 (preserves sample rate, mono channel)
+                                              ↓
+                                         Audio files → audio/*.mp3
                                          Metadata → json/ (with path refs)
                                               ↓
                                          Update manifests

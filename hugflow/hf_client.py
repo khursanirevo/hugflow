@@ -3,6 +3,7 @@ Hugging Face API client for dataset operations.
 """
 
 import json
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -13,6 +14,51 @@ from structlog import get_logger
 from hugflow.config import Config
 
 logger = get_logger(__name__)
+
+
+def convert_to_mp3(input_path: Path, output_path: Path, bitrate: str = "192k") -> Path:
+    """
+    Convert audio file to MP3 format preserving original sample rate.
+
+    Args:
+        input_path: Path to input audio file (any format)
+        output_path: Desired output path (will use .mp3 extension)
+        bitrate: MP3 bitrate (default: 192k for high quality)
+
+    Returns:
+        Path to the converted MP3 file
+    """
+    from pydub import AudioSegment
+
+    log = logger.bind(input=str(input_path), output=str(output_path))
+
+    try:
+        # Load audio file (pydub auto-detects format)
+        audio = AudioSegment.from_file(input_path)
+
+        # Keep original sample rate, convert to mono to avoid multiprocess issues
+        original_frame_rate = audio.frame_rate
+        audio = audio.set_channels(1)  # Mono to avoid issues
+
+        # Ensure output path has .mp3 extension
+        if not output_path.suffix.lower() == ".mp3":
+            output_path = output_path.with_suffix(".mp3")
+
+        # Export to MP3 with original sample rate
+        audio.export(str(output_path), format="mp3", bitrate=bitrate, parameters=["-ar", str(original_frame_rate)])
+
+        log.info(
+            "Audio converted to MP3",
+            sample_rate=original_frame_rate,
+            bitrate=bitrate,
+            size_mb=output_path.stat().st_size / (1024 * 1024),
+        )
+
+        return output_path
+
+    except Exception as e:
+        log.error("Failed to convert audio to MP3", error=str(e))
+        raise
 
 
 class HFClientError(Exception):
@@ -243,7 +289,7 @@ class HFClient:
             raise HFDownloadError(f"Failed to load dataset: {e}") from e
 
         # Validate audio column exists and contains audio-like data
-        if total_files > 0:
+        if len(dataset) > 0:
             first_row = dataset[0]
             if audio_column not in first_row:
                 # Try to auto-detect audio column
@@ -353,41 +399,75 @@ class HFClient:
                     if isinstance(audio_data, dict):
                         # Handle dict with bytes field (embedded audio data)
                         if "bytes" in audio_data:
-                            # Extract bytes and save to audio directory
+                            # Extract bytes and save to temp file first
                             audio_bytes = audio_data["bytes"]
-                            # Determine filename from path field or use index
-                            if "path" in audio_data:
-                                filename = audio_data["path"]
+                            # Determine filename: check for {column}_filename field, then audio_data fields, then row number
+                            filename = None
+                            # First check if there's a separate field like {audio_column}_filename in the example
+                            filename_field = f"{audio_column}_filename"
+                            if filename_field in example and example[filename_field]:
+                                filename = Path(example[filename_field]).stem  # Remove extension, will add .mp3
+                            elif "filename" in audio_data:
+                                filename = Path(audio_data["filename"]).stem
+                            elif "path" in audio_data:
+                                filename = Path(audio_data["path"]).stem
                             else:
-                                filename = f"{idx}.wav"
-                            dest_path = audio_dir / f"{idx}_{filename}"
-                            # Write bytes to file
-                            with open(dest_path, "wb") as f:
-                                f.write(audio_bytes)
-                            audio_files += 1
-                            total_size += len(audio_bytes)
-                            downloaded_files += 1
-                            # Replace audio field with just the path string
-                            example[audio_column] = str(dest_path)
-                        # Handle dict with path field (file reference)
-                        elif "path" in audio_data:
-                            src_path = Path(audio_data["path"])
-                            if src_path.exists():
-                                dest_path = audio_dir / f"{idx}_{src_path.name}"
-                                shutil.copy2(src_path, dest_path)
+                                filename = f"{idx}"
+                            # Use .mp3 extension
+                            mp3_filename = f"{filename}.mp3"
+                            dest_path = audio_dir / mp3_filename
+                            # Write to temp file first, then convert to MP3
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                                tmp.write(audio_bytes)
+                                tmp_path = Path(tmp.name)
+                            # Convert to MP3 with safe settings
+                            try:
+                                dest_path = convert_to_mp3(tmp_path, dest_path, bitrate="192k")
                                 audio_files += 1
                                 total_size += dest_path.stat().st_size
                                 downloaded_files += 1
+                            finally:
+                                # Clean up temp file
+                                tmp_path.unlink(missing_ok=True)
+                            # Replace audio field with just the path string
+                            example[audio_column] = str(dest_path)
+                        # Handle dict with path field (file reference only, no bytes)
+                        elif "path" in audio_data:
+                            src_path = Path(audio_data["path"])
+                            if src_path.exists():
+                                # Use the filename stem from path, add .mp3 extension
+                                filename = src_path.stem
+                                mp3_filename = f"{filename}.mp3"
+                                dest_path = audio_dir / mp3_filename
+                                # Convert to MP3 with safe settings
+                                try:
+                                    dest_path = convert_to_mp3(src_path, dest_path, bitrate="192k")
+                                    audio_files += 1
+                                    total_size += dest_path.stat().st_size
+                                    downloaded_files += 1
+                                except Exception as e:
+                                    log.warning("Failed to convert audio file to MP3", path=str(src_path), error=str(e))
+                                    raise
                                 # Replace audio field with just the path string
                                 example[audio_column] = str(dest_path)
                     elif isinstance(audio_data, bytes):
-                        # Audio data is raw bytes, save to file
-                        dest_path = audio_dir / f"{idx}.wav"
-                        with open(dest_path, "wb") as f:
-                            f.write(audio_data)
-                        audio_files += 1
-                        total_size += len(audio_data)
-                        downloaded_files += 1
+                        # Audio data is raw bytes, save to temp file and convert to MP3
+                        filename = f"{idx}"
+                        mp3_filename = f"{filename}.mp3"
+                        dest_path = audio_dir / mp3_filename
+                        # Write to temp file first, then convert to MP3
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                            tmp.write(audio_data)
+                            tmp_path = Path(tmp.name)
+                        # Convert to MP3 with safe settings
+                        try:
+                            dest_path = convert_to_mp3(tmp_path, dest_path, sample_rate=16000, bitrate="192k")
+                            audio_files += 1
+                            total_size += dest_path.stat().st_size
+                            downloaded_files += 1
+                        finally:
+                            # Clean up temp file
+                            tmp_path.unlink(missing_ok=True)
                         # Replace bytes with path string
                         example[audio_column] = str(dest_path)
 
@@ -454,41 +534,75 @@ class HFClient:
                     if isinstance(audio_data, dict):
                         # Handle dict with bytes field (embedded audio data)
                         if "bytes" in audio_data:
-                            # Extract bytes and save to audio directory
+                            # Extract bytes and save to temp file first
                             audio_bytes = audio_data["bytes"]
-                            # Determine filename from path field or use index
-                            if "path" in audio_data:
-                                filename = audio_data["path"]
+                            # Determine filename: check for {column}_filename field, then audio_data fields, then row number
+                            filename = None
+                            # First check if there's a separate field like {audio_column}_filename in the example
+                            filename_field = f"{audio_column}_filename"
+                            if filename_field in example and example[filename_field]:
+                                filename = Path(example[filename_field]).stem  # Remove extension, will add .mp3
+                            elif "filename" in audio_data:
+                                filename = Path(audio_data["filename"]).stem
+                            elif "path" in audio_data:
+                                filename = Path(audio_data["path"]).stem
                             else:
-                                filename = f"{idx}.wav"
-                            dest_path = audio_dir / f"{idx}_{filename}"
-                            # Write bytes to file
-                            with open(dest_path, "wb") as f:
-                                f.write(audio_bytes)
-                            audio_files += 1
-                            total_size += len(audio_bytes)
-                            downloaded_files += 1
-                            # Replace audio field with just the path string
-                            example[audio_column] = str(dest_path)
-                        # Handle dict with path field (file reference)
-                        elif "path" in audio_data:
-                            src_path = Path(audio_data["path"])
-                            if src_path.exists():
-                                dest_path = audio_dir / f"{idx}_{src_path.name}"
-                                shutil.copy2(src_path, dest_path)
+                                filename = f"{idx}"
+                            # Use .mp3 extension
+                            mp3_filename = f"{filename}.mp3"
+                            dest_path = audio_dir / mp3_filename
+                            # Write to temp file first, then convert to MP3
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                                tmp.write(audio_bytes)
+                                tmp_path = Path(tmp.name)
+                            # Convert to MP3 with safe settings
+                            try:
+                                dest_path = convert_to_mp3(tmp_path, dest_path, bitrate="192k")
                                 audio_files += 1
                                 total_size += dest_path.stat().st_size
                                 downloaded_files += 1
+                            finally:
+                                # Clean up temp file
+                                tmp_path.unlink(missing_ok=True)
+                            # Replace audio field with just the path string
+                            example[audio_column] = str(dest_path)
+                        # Handle dict with path field (file reference only, no bytes)
+                        elif "path" in audio_data:
+                            src_path = Path(audio_data["path"])
+                            if src_path.exists():
+                                # Use the filename stem from path, add .mp3 extension
+                                filename = src_path.stem
+                                mp3_filename = f"{filename}.mp3"
+                                dest_path = audio_dir / mp3_filename
+                                # Convert to MP3 with safe settings
+                                try:
+                                    dest_path = convert_to_mp3(src_path, dest_path, bitrate="192k")
+                                    audio_files += 1
+                                    total_size += dest_path.stat().st_size
+                                    downloaded_files += 1
+                                except Exception as e:
+                                    log.warning("Failed to convert audio file to MP3", path=str(src_path), error=str(e))
+                                    raise
                                 # Replace audio field with just the path string
                                 example[audio_column] = str(dest_path)
                     elif isinstance(audio_data, bytes):
-                        # Audio data is raw bytes, save to file
-                        dest_path = audio_dir / f"{idx}.wav"
-                        with open(dest_path, "wb") as f:
-                            f.write(audio_data)
-                        audio_files += 1
-                        total_size += len(audio_data)
-                        downloaded_files += 1
+                        # Audio data is raw bytes, save to temp file and convert to MP3
+                        filename = f"{idx}"
+                        mp3_filename = f"{filename}.mp3"
+                        dest_path = audio_dir / mp3_filename
+                        # Write to temp file first, then convert to MP3
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                            tmp.write(audio_data)
+                            tmp_path = Path(tmp.name)
+                        # Convert to MP3 with safe settings
+                        try:
+                            dest_path = convert_to_mp3(tmp_path, dest_path, sample_rate=16000, bitrate="192k")
+                            audio_files += 1
+                            total_size += dest_path.stat().st_size
+                            downloaded_files += 1
+                        finally:
+                            # Clean up temp file
+                            tmp_path.unlink(missing_ok=True)
                         # Replace bytes with path string
                         example[audio_column] = str(dest_path)
 
