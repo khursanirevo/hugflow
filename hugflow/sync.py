@@ -414,11 +414,15 @@ class SyncManager:
                 self.storage.delete_dataset(delete_spec)
 
             # Update manifest
-            self.storage.update_manifest(
-                spec,  # RemoveSpec
-                "remove",
-                reason=spec.reason,
-            )
+            if dataset_entry:
+                self.storage.update_manifest(
+                    delete_spec,  # DatasetSpec
+                    "remove",
+                    reason=spec.reason,
+                )
+            else:
+                # Dataset not in manifest, just log it
+                log.warning("Dataset not found in manifest, skipping manifest update")
 
             # Get new storage usage
             storage_after = self.storage.get_storage_usage()
