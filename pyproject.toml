@@ -31,6 +31,12 @@ hugflow = "hugflow.cli:app"
 requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+packages = ["hugflow"]
+
+[tool.setuptools.package-data]
+hugflow = ["py.typed"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
