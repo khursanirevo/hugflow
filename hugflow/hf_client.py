@@ -242,6 +242,56 @@ class HFClient:
             log.error("Failed to load dataset", error=str(e))
             raise HFDownloadError(f"Failed to load dataset: {e}") from e
 
+        # Validate audio column exists and contains audio-like data
+        if total_files > 0:
+            first_row = dataset[0]
+            if audio_column not in first_row:
+                # Try to auto-detect audio column
+                log.warning(
+                    f"Audio column '{audio_column}' not found in dataset",
+                    available_columns=list(first_row.keys()),
+                    audio_column=audio_column,
+                )
+                # Suggest common audio column names
+                suggestions = [col for col in first_row.keys() if 'audio' in col.lower()]
+                if suggestions:
+                    raise HFDownloadError(
+                        f"Audio column '{audio_column}' not found in dataset. "
+                        f"Available columns: {list(first_row.keys())}. "
+                        f"Did you mean one of these? {suggestions}. "
+                        f"Please specify 'audio_column' in your YAML file."
+                    )
+                else:
+                    raise HFDownloadError(
+                        f"Audio column '{audio_column}' not found in dataset. "
+                        f"Available columns: {list(first_row.keys())}. "
+                        f"Please specify the correct 'audio_column' in your YAML file."
+                    )
+            else:
+                # Column exists, check if it looks like audio data
+                audio_data = first_row[audio_column]
+                log.debug(
+                    "Validating audio column",
+                    audio_column=audio_column,
+                    audio_type=type(audio_data).__name__,
+                )
+
+                # Check if it looks like audio (bytes, dict with bytes/path, etc.)
+                is_audio = False
+                if isinstance(audio_data, dict):
+                    if "bytes" in audio_data or "path" in audio_data or "array" in audio_data:
+                        is_audio = True
+                elif isinstance(audio_data, bytes):
+                    is_audio = True
+
+                if not is_audio:
+                    log.warning(
+                        "Audio column may not contain audio data",
+                        audio_column=audio_column,
+                        audio_type=type(audio_data).__name__,
+                        suggestion="Check if this is the correct column"
+                    )
+
         # Check if it's a streaming dataset or in-memory
         is_streaming = hasattr(dataset, "_excelecutor") and hasattr(dataset, "_streaming")
 
