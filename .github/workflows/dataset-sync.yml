@@ -16,8 +16,8 @@ concurrency:
 
 jobs:
   sync:
-    runs-on: self-hosted
-    timeout-minutes: 999999
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
