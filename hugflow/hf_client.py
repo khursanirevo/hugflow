@@ -298,17 +298,34 @@ class HFClient:
                 # Process audio if present
                 if audio_column in example:
                     audio_data = example[audio_column]
-                    if isinstance(audio_data, dict) and "path" in audio_data:
-                        # Copy audio file to audio directory
-                        src_path = Path(audio_data["path"])
-                        if src_path.exists():
-                            dest_path = audio_dir / f"{idx}_{src_path.name}"
-                            shutil.copy2(src_path, dest_path)
+                    if isinstance(audio_data, dict):
+                        # Handle dict with bytes field (embedded audio data)
+                        if "bytes" in audio_data:
+                            # Extract bytes and save to audio directory
+                            audio_bytes = audio_data["bytes"]
+                            # Determine filename from path field or use index
+                            if "path" in audio_data:
+                                filename = audio_data["path"]
+                            else:
+                                filename = f"{idx}.wav"
+                            dest_path = audio_dir / f"{idx}_{filename}"
+                            # Write bytes to file
+                            with open(dest_path, "wb") as f:
+                                f.write(audio_bytes)
                             audio_files += 1
-                            total_size += dest_path.stat().st_size
+                            total_size += len(audio_bytes)
                             downloaded_files += 1
+                        # Handle dict with path field (file reference)
+                        elif "path" in audio_data:
+                            src_path = Path(audio_data["path"])
+                            if src_path.exists():
+                                dest_path = audio_dir / f"{idx}_{src_path.name}"
+                                shutil.copy2(src_path, dest_path)
+                                audio_files += 1
+                                total_size += dest_path.stat().st_size
+                                downloaded_files += 1
                     elif isinstance(audio_data, bytes):
-                        # Audio data is bytes, save to file
+                        # Audio data is raw bytes, save to file
                         dest_path = audio_dir / f"{idx}.wav"
                         with open(dest_path, "wb") as f:
                             f.write(audio_data)
@@ -374,17 +391,34 @@ class HFClient:
                 # Process audio if present
                 if audio_column in example:
                     audio_data = example[audio_column]
-                    if isinstance(audio_data, dict) and "path" in audio_data:
-                        # Copy audio file to audio directory
-                        src_path = Path(audio_data["path"])
-                        if src_path.exists():
-                            dest_path = audio_dir / f"{idx}_{src_path.name}"
-                            shutil.copy2(src_path, dest_path)
+                    if isinstance(audio_data, dict):
+                        # Handle dict with bytes field (embedded audio data)
+                        if "bytes" in audio_data:
+                            # Extract bytes and save to audio directory
+                            audio_bytes = audio_data["bytes"]
+                            # Determine filename from path field or use index
+                            if "path" in audio_data:
+                                filename = audio_data["path"]
+                            else:
+                                filename = f"{idx}.wav"
+                            dest_path = audio_dir / f"{idx}_{filename}"
+                            # Write bytes to file
+                            with open(dest_path, "wb") as f:
+                                f.write(audio_bytes)
                             audio_files += 1
-                            total_size += dest_path.stat().st_size
+                            total_size += len(audio_bytes)
                             downloaded_files += 1
+                        # Handle dict with path field (file reference)
+                        elif "path" in audio_data:
+                            src_path = Path(audio_data["path"])
+                            if src_path.exists():
+                                dest_path = audio_dir / f"{idx}_{src_path.name}"
+                                shutil.copy2(src_path, dest_path)
+                                audio_files += 1
+                                total_size += dest_path.stat().st_size
+                                downloaded_files += 1
                     elif isinstance(audio_data, bytes):
-                        # Audio data is bytes, save to file
+                        # Audio data is raw bytes, save to file
                         dest_path = audio_dir / f"{idx}.wav"
                         with open(dest_path, "wb") as f:
                             f.write(audio_data)
@@ -415,6 +449,21 @@ class HFClient:
             json_files=json_files,
             total_size=total_size,
         )
+
+        # Validation: Warn if audio column exists but no audio files were downloaded
+        if audio_files == 0 and total_files > 0:
+            # Check if first row has audio column
+            try:
+                first_row = dataset[0]
+                if audio_column in first_row:
+                    log.warning(
+                        "Audio column exists but no audio files were extracted!",
+                        audio_column=audio_column,
+                        total_rows=total_files,
+                        message="This might indicate a problem with audio extraction",
+                    )
+            except:
+                pass
 
         return {
             "downloaded_files": downloaded_files,
