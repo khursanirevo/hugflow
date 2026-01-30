@@ -317,10 +317,8 @@ class HFClient:
                             audio_files += 1
                             total_size += len(audio_bytes)
                             downloaded_files += 1
-                            # Keep track of the audio file path for JSON reference
-                            audio_file_path = str(dest_path)
-                            # Remove the bytes field from the example to avoid duplication in JSON
-                            example[audio_column] = {"path": audio_file_path}
+                            # Replace audio field with just the path string
+                            example[audio_column] = str(dest_path)
                         # Handle dict with path field (file reference)
                         elif "path" in audio_data:
                             src_path = Path(audio_data["path"])
@@ -330,10 +328,8 @@ class HFClient:
                                 audio_files += 1
                                 total_size += dest_path.stat().st_size
                                 downloaded_files += 1
-                                # Keep track of the audio file path for JSON reference
-                                audio_file_path = str(dest_path)
-                                # Update the path to point to the copied location
-                                example[audio_column] = {"path": audio_file_path}
+                                # Replace audio field with just the path string
+                                example[audio_column] = str(dest_path)
                     elif isinstance(audio_data, bytes):
                         # Audio data is raw bytes, save to file
                         dest_path = audio_dir / f"{idx}.wav"
@@ -342,10 +338,8 @@ class HFClient:
                         audio_files += 1
                         total_size += len(audio_data)
                         downloaded_files += 1
-                        # Keep track of the audio file path for JSON reference
-                        audio_file_path = str(dest_path)
-                        # Replace bytes with path reference
-                        example[audio_column] = {"path": audio_file_path}
+                        # Replace bytes with path string
+                        example[audio_column] = str(dest_path)
 
                 # Save metadata as JSON (without audio bytes, just path reference)
                 json_path = json_dir / f"{idx}.json"
@@ -424,10 +418,8 @@ class HFClient:
                             audio_files += 1
                             total_size += len(audio_bytes)
                             downloaded_files += 1
-                            # Keep track of the audio file path for JSON reference
-                            audio_file_path = str(dest_path)
-                            # Remove the bytes field from the example to avoid duplication in JSON
-                            example[audio_column] = {"path": audio_file_path}
+                            # Replace audio field with just the path string
+                            example[audio_column] = str(dest_path)
                         # Handle dict with path field (file reference)
                         elif "path" in audio_data:
                             src_path = Path(audio_data["path"])
@@ -437,10 +429,8 @@ class HFClient:
                                 audio_files += 1
                                 total_size += dest_path.stat().st_size
                                 downloaded_files += 1
-                                # Keep track of the audio file path for JSON reference
-                                audio_file_path = str(dest_path)
-                                # Update the path to point to the copied location
-                                example[audio_column] = {"path": audio_file_path}
+                                # Replace audio field with just the path string
+                                example[audio_column] = str(dest_path)
                     elif isinstance(audio_data, bytes):
                         # Audio data is raw bytes, save to file
                         dest_path = audio_dir / f"{idx}.wav"
@@ -449,10 +439,8 @@ class HFClient:
                         audio_files += 1
                         total_size += len(audio_data)
                         downloaded_files += 1
-                        # Keep track of the audio file path for JSON reference
-                        audio_file_path = str(dest_path)
-                        # Replace bytes with path reference
-                        example[audio_column] = {"path": audio_file_path}
+                        # Replace bytes with path string
+                        example[audio_column] = str(dest_path)
 
                 # Save metadata as JSON (without audio bytes, just path reference)
                 json_path = json_dir / f"{idx}.json"
