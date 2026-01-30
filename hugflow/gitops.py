@@ -142,25 +142,55 @@ class GitOpsManager:
         log = logger.bind(pr_number=pr_number)
         log.info("Fetching PR files")
 
-        try:
-            pull_request = self.repo.get_pull(pr_number)
-            files = pull_request.get_files()
+        # Try PyGithub first
+        if self.repo:
+            try:
+                pull_request = self.repo.get_pull(pr_number)
+                files = pull_request.get_files()
 
-            yaml_files = []
-            for file in files:
-                if file.filename.startswith("requests/add/") or file.filename.startswith("requests/remove/"):
-                    if file.filename.endswith((".yaml", ".yml")):
-                        yaml_files.append(Path(file.filename))
+                yaml_files = []
+                for file in files:
+                    if file.filename.startswith("requests/add/") or file.filename.startswith("requests/remove/"):
+                        if file.filename.endswith((".yaml", ".yml")):
+                            yaml_files.append(Path(file.filename))
 
-            log.info("Found YAML files in PR", count=len(yaml_files))
-            return yaml_files
+                log.info("Found YAML files in PR", count=len(yaml_files))
+                return yaml_files
 
-        except GithubException as e:
-            log.error("GitHub API error", error=str(e))
-            raise GitOpsError(f"GitHub API error: {e}") from e
-        except Exception as e:
-            log.error("Unexpected error fetching PR files", error=str(e))
-            raise GitOpsError(f"Unexpected error: {e}") from e
+            except GithubException as e:
+                log.error("GitHub API error", error=str(e))
+                raise GitOpsError(f"GitHub API error: {e}") from e
+            except Exception as e:
+                log.error("Unexpected error fetching PR files", error=str(e))
+                raise GitOpsError(f"Unexpected error: {e}") from e
+
+        # Fall back to gh CLI
+        if self.use_gh_cli:
+            try:
+                # Get list of changed files in PR
+                output = self._run_gh([
+                    "pr", "view", str(pr_number),
+                    "--json", "files",
+                    "-q", ".files[].path"
+                ])
+
+                # Parse output and filter YAML files
+                yaml_files = []
+                for line in output.split("\n"):
+                    line = line.strip()
+                    if line and (line.startswith("requests/add/") or line.startswith("requests/remove/")):
+                        if line.endswith((".yaml", ".yml")):
+                            yaml_files.append(Path(line))
+
+                log.info("Found YAML files in PR", count=len(yaml_files))
+                return yaml_files
+
+            except Exception as e:
+                log.error("Failed to fetch PR files with gh CLI", error=str(e))
+                raise GitOpsError(f"Failed to fetch PR files: {e}") from e
+
+        # No GitHub auth available
+        raise GitOpsError("No GitHub authentication available (token or gh CLI)")
 
     def comment_start(self, pr_number: Optional[int] = None, dataset_name: str = "") -> None:
         """
