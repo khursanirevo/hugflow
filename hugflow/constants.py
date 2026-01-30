@@ -7,6 +7,7 @@ ADD_DIR = "requests/add"
 REMOVE_DIR = "requests/remove"
 STORAGE_ROOT = "./datasets"
 STATE_DIR = ".hugflow-state"
+PROCESSED_ROOT = "/mnt/data/processed"  # Symlink target for processed datasets
 
 # Manifest files
 ACTIVE_MANIFEST = ".hugflow-state/active.json"

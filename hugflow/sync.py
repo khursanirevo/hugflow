@@ -213,6 +213,14 @@ class SyncManager:
                 download_time_seconds=elapsed,
             )
 
+            # Create symlink in processed directory
+            log.info("Creating processed symlink")
+            try:
+                symlink_path = self.storage.create_processed_symlink(spec)
+                log.info("Processed symlink created", symlink_path=str(symlink_path))
+            except Exception as e:
+                log.warning("Failed to create processed symlink, continuing anyway", error=str(e))
+
             # Delete progress file if configured
             if self.config.behavior.cleanup_progress_on_success:
                 self.storage.delete_progress(spec)

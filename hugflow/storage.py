@@ -3,6 +3,7 @@ Storage and file system operations for Hugflow.
 """
 
 import json
+import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +20,7 @@ from hugflow.constants import (
     PROGRESS_DIR,
     STATE_DIR,
     STORAGE_ROOT,
+    PROCESSED_ROOT,
     DOWNLOAD_MODE_FULL,
     DOWNLOAD_MODE_SPECIFIC,
 )
@@ -124,6 +126,61 @@ class StorageManager:
         (dataset_path / JSON_DIR).mkdir(exist_ok=True)
 
         return dataset_path
+
+    def create_processed_symlink(self, spec: DatasetSpec) -> Path:
+        """
+        Create a symlink from the processed directory to the dataset.
+
+        Creates a symlink at /mnt/data/processed/{storage_name} pointing to
+        the actual dataset in STORAGE_ROOT/{storage_name}.
+
+        Args:
+            spec: Dataset specification
+
+        Returns:
+            Path to the symlink
+
+        Raises:
+            StorageError: If symlink creation fails
+        """
+        storage_name = spec.storage_name
+        dataset_path = self.storage_root / storage_name
+        processed_root = Path(PROCESSED_ROOT)
+        symlink_path = processed_root / storage_name
+
+        log = logger.bind(
+            hf_id=spec.hf_id,
+            storage_name=storage_name,
+            dataset_path=str(dataset_path),
+            symlink_path=str(symlink_path),
+        )
+
+        try:
+            # Ensure processed directory exists
+            processed_root.mkdir(parents=True, exist_ok=True)
+
+            # Remove existing symlink if it exists
+            if symlink_path.is_symlink() or symlink_path.exists():
+                log.info("Removing existing symlink")
+                symlink_path.unlink()
+
+            # Create relative symlink for portability
+            # Calculate relative path from symlink to target
+            try:
+                relative_target = os.path.relpath(dataset_path.resolve(), symlink_path.parent.resolve())
+                log.info("Creating relative symlink", relative_target=relative_target)
+                symlink_path.symlink_to(relative_target)
+            except (OSError, ValueError) as e:
+                # Fall back to absolute symlink if relative fails
+                log.warning("Relative symlink failed, using absolute path", error=str(e))
+                symlink_path.symlink_to(dataset_path.resolve())
+
+            log.info("Processed symlink created successfully")
+            return symlink_path
+
+        except Exception as e:
+            log.error("Failed to create processed symlink", error=str(e))
+            raise StorageError(f"Failed to create processed symlink: {e}") from e
 
     def delete_dataset(self, spec: DatasetSpec) -> None:
         """
