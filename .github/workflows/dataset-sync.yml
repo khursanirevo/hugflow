@@ -95,6 +95,16 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            // Get PR details to extract branch ref
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+
+            const branchRef = pr.head.ref;
+
+            // Merge the PR
             await github.rest.pulls.merge({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -103,3 +113,15 @@ jobs:
               commit_message: 'Automatically merged after successful dataset download.',
               merge_method: 'merge'
             });
+
+            // Delete the branch after merge
+            try {
+              await github.rest.git.deleteRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `heads/${branchRef}`
+              });
+              console.log(`✅ Deleted branch: ${branchRef}`);
+            } catch (err) {
+              console.log(`⚠️ Could not delete branch ${branchRef}:`, err.message);
+            }

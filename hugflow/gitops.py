@@ -372,7 +372,7 @@ Auto-merging PR...
 
     def merge_pr(self, pr_number: Optional[int] = None) -> None:
         """
-        Merge a PR.
+        Merge a PR and delete the branch.
 
         Args:
             pr_number: PR number
@@ -391,12 +391,25 @@ Auto-merging PR...
 
         try:
             pull_request = self.repo.get_pull(pr_number)
+            branch_ref = pull_request.head.ref
+
             pull_request.merge(
                 commit_title="Auto-merge: Dataset download successful",
                 commit_message="Automatically merged after successful dataset download.",
                 merge_method="merge",
             )
             log.info("PR merged successfully")
+
+            # Delete the branch after merge
+            try:
+                # Get the git ref for the branch
+                ref = self.repo.get_git_ref(f"heads/{branch_ref}")
+                ref.delete()
+                log.info("Branch deleted successfully", branch=branch_ref)
+            except GithubException as e:
+                log.warning("Failed to delete branch", branch=branch_ref, error=str(e))
+            except Exception as e:
+                log.warning("Unexpected error deleting branch", branch=branch_ref, error=str(e))
 
         except GithubException as e:
             log.error("Failed to merge PR", error=str(e))
