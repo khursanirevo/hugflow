@@ -6,8 +6,11 @@
 
 - **Ultra-simple YAML** - Just 2 required fields (HF ID + description)
 - **Smart Audio Extraction** - Automatically extracts audio files to MP3 format, metadata to JSON
+  - Supports dict audio (path/array) and AudioDecoder objects (torchcodec)
+  - Handles float32 tensors, converts to int16 PCM for MP3 encoding
 - **Optimized Storage** - Audio converted to MP3 with original sample rate preserved, mono channel for safety
 - **No Data Duplication** - Audio bytes removed from JSON, keeping only path references
+- **Processed Symlinks** - Auto-creates symlinks in `/mnt/data/processed/{dataset_name}` for easy access
 - **GitOps Workflow** - Create PR → Auto-download → Auto-merge
 - **Slack Notifications** - Optional real-time progress updates
 - **Resume Capability** - Progress tracking for long-running downloads
@@ -219,6 +222,18 @@ datasets/
 - Files named using `audio_filename` field from dataset (or row number if unavailable)
 - JSON contains metadata + path to audio file (NOT embedded bytes)
 - Significant space savings: ~900MB → ~330MB per 1801 files
+- **Symlink created** at `/mnt/data/processed/{dataset_name}` pointing to dataset location
+
+### Supported Audio Formats
+
+Hugflow automatically detects and handles multiple audio formats:
+
+| Format Type | Detection | Processing |
+|-------------|-----------|------------|
+| **Dict with 'path'** | `isinstance(audio, dict) and 'path' in audio` | Extracts external file, converts to MP3 |
+| **Dict with 'array'** | `isinstance(audio, dict) and 'array' in audio` | Converts numpy array to MP3 |
+| **AudioDecoder** | `hasattr(audio, 'get_all_samples')` | Extracts torch tensor, converts to MP3 |
+| **Bytes** | `isinstance(audio, bytes)` | Decodes bytes, converts to MP3 |
 
 ---
 
@@ -230,6 +245,7 @@ datasets/
 |----------|-------------|---------|
 | `HF_TOKEN` | Hugging Face API token | Required |
 | `STORAGE_ROOT` | Where datasets are stored | `./datasets` |
+| `PROCESSED_ROOT` | Where symlinks to processed datasets are created | `/mnt/data/processed` |
 
 ### Optional Settings
 
@@ -308,6 +324,18 @@ Check that:
 1. Dataset actually has audio data column
 2. `audio_column` in YAML matches the column name in dataset
 3. Check logs for "Audio column exists but no audio files extracted" warning
+
+### AudioDecoder Objects
+
+Some HuggingFace datasets use `AudioDecoder` objects (from torchcodec):
+- **Supported**: Automatically detected and extracted via `get_all_samples()`
+- **Format**: Converts float32 tensors → int16 PCM → WAV → MP3
+- **Sample Rate**: Preserved from original audio
+- **Channels**: Converts to mono for safety
+
+Logs will show:
+- `"Found AudioDecoder object, extracting audio"`
+- `"Successfully extracted and converted AudioDecoder audio"`
 
 ### MP3 Conversion Issues
 

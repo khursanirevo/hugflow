@@ -322,13 +322,17 @@ class HFClient:
                     audio_type=type(audio_data).__name__,
                 )
 
-                # Check if it looks like audio (bytes, dict with bytes/path, etc.)
+                # Check if it looks like audio (bytes, dict with bytes/path, AudioDecoder, etc.)
                 is_audio = False
                 if isinstance(audio_data, dict):
                     if "bytes" in audio_data or "path" in audio_data or "array" in audio_data:
                         is_audio = True
                 elif isinstance(audio_data, bytes):
                     is_audio = True
+                elif hasattr(audio_data, 'decode') and 'AudioDecoder' in type(audio_data).__name__:
+                    # AudioDecoder or similar decodable objects
+                    is_audio = True
+                    log.info("Detected AudioDecoder object in audio column", audio_type=type(audio_data).__name__)
 
                 if not is_audio:
                     log.warning(
@@ -396,7 +400,64 @@ class HFClient:
 
                 if audio_column in example:
                     audio_data = example[audio_column]
-                    if isinstance(audio_data, dict):
+
+                    # Handle AudioDecoder objects from torchcodec (not dict, not bytes)
+                    if hasattr(audio_data, 'get_all_samples'):
+                        log.info("Found AudioDecoder object, extracting audio", row=idx)
+                        try:
+                            import torch
+                            import numpy as np
+                            import wave
+
+                            # Get samples - this returns AudioSamples object
+                            samples = audio_data.get_all_samples()
+                            audio_tensor = samples.data  # torch.Tensor
+                            sample_rate = samples.sample_rate
+
+                            # Convert to numpy
+                            audio_array = audio_tensor.numpy()
+                            # Remove channel dimension if present: (1, samples) -> (samples,)
+                            if len(audio_array.shape) == 2 and audio_array.shape[0] == 1:
+                                audio_array = audio_array.squeeze(0)
+
+                            # Get filename
+                            filename_field = f"{audio_column}_filename"
+                            if filename_field in example and example[filename_field]:
+                                filename = Path(example[filename_field]).stem
+                            else:
+                                filename = f"{idx}"
+                            mp3_filename = f"{filename}.mp3"
+                            dest_path = audio_dir / mp3_filename
+
+                            # Save as WAV first (for pydub compatibility)
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                                tmp_path = Path(tmp.name)
+                                # Write WAV file
+                                with wave.open(str(tmp_path), 'wb') as wav_file:
+                                    wav_file.setnchannels(1)
+                                    wav_file.setsampwidth(2)  # 16-bit PCM
+                                    wav_file.setframerate(sample_rate)
+                                    # Convert float32 to int16
+                                    audio_int16 = (audio_array * 32767).astype(np.int16)
+                                    wav_file.writeframes(audio_int16.tobytes())
+
+                            # Convert to MP3
+                            try:
+                                dest_path = convert_to_mp3(tmp_path, dest_path, bitrate="192k")
+                                audio_files += 1
+                                total_size += dest_path.stat().st_size
+                                downloaded_files += 1
+                                log.info("Successfully extracted and converted AudioDecoder audio", row=idx, file=str(dest_path))
+                            finally:
+                                tmp_path.unlink(missing_ok=True)
+
+                            # Replace with path
+                            example[audio_column] = str(dest_path)
+                        except Exception as e:
+                            log.warning("Failed to extract audio from AudioDecoder", row=idx, error=str(e))
+                            example[audio_column] = None
+
+                    elif isinstance(audio_data, dict):
                         # Handle dict with bytes field (embedded audio data)
                         if "bytes" in audio_data:
                             # Extract bytes and save to temp file first
@@ -451,11 +512,10 @@ class HFClient:
                                 # Replace audio field with just the path string
                                 example[audio_column] = str(dest_path)
                         else:
-                            # Unknown audio format (e.g., AudioDecoder object, array, etc.)
-                            # Skip audio extraction and set to None
+                            # Unknown audio format in dict
                             log.warning(
-                                "Unknown audio format, skipping audio extraction",
-                                audio_keys=list(audio_data.keys()) if isinstance(audio_data, dict) else type(audio_data).__name__,
+                                "Unknown audio format in dict, skipping audio extraction",
+                                audio_keys=list(audio_data.keys()),
                                 row=idx,
                             )
                             example[audio_column] = None
@@ -540,7 +600,64 @@ class HFClient:
 
                 if audio_column in example:
                     audio_data = example[audio_column]
-                    if isinstance(audio_data, dict):
+
+                    # Handle AudioDecoder objects from torchcodec (not dict, not bytes)
+                    if hasattr(audio_data, 'get_all_samples'):
+                        log.info("Found AudioDecoder object, extracting audio", row=idx)
+                        try:
+                            import torch
+                            import numpy as np
+                            import wave
+
+                            # Get samples - this returns AudioSamples object
+                            samples = audio_data.get_all_samples()
+                            audio_tensor = samples.data  # torch.Tensor
+                            sample_rate = samples.sample_rate
+
+                            # Convert to numpy
+                            audio_array = audio_tensor.numpy()
+                            # Remove channel dimension if present: (1, samples) -> (samples,)
+                            if len(audio_array.shape) == 2 and audio_array.shape[0] == 1:
+                                audio_array = audio_array.squeeze(0)
+
+                            # Get filename
+                            filename_field = f"{audio_column}_filename"
+                            if filename_field in example and example[filename_field]:
+                                filename = Path(example[filename_field]).stem
+                            else:
+                                filename = f"{idx}"
+                            mp3_filename = f"{filename}.mp3"
+                            dest_path = audio_dir / mp3_filename
+
+                            # Save as WAV first (for pydub compatibility)
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                                tmp_path = Path(tmp.name)
+                                # Write WAV file
+                                with wave.open(str(tmp_path), 'wb') as wav_file:
+                                    wav_file.setnchannels(1)
+                                    wav_file.setsampwidth(2)  # 16-bit PCM
+                                    wav_file.setframerate(sample_rate)
+                                    # Convert float32 to int16
+                                    audio_int16 = (audio_array * 32767).astype(np.int16)
+                                    wav_file.writeframes(audio_int16.tobytes())
+
+                            # Convert to MP3
+                            try:
+                                dest_path = convert_to_mp3(tmp_path, dest_path, bitrate="192k")
+                                audio_files += 1
+                                total_size += dest_path.stat().st_size
+                                downloaded_files += 1
+                                log.info("Successfully extracted and converted AudioDecoder audio", row=idx, file=str(dest_path))
+                            finally:
+                                tmp_path.unlink(missing_ok=True)
+
+                            # Replace with path
+                            example[audio_column] = str(dest_path)
+                        except Exception as e:
+                            log.warning("Failed to extract audio from AudioDecoder", row=idx, error=str(e))
+                            example[audio_column] = None
+
+                    elif isinstance(audio_data, dict):
                         # Handle dict with bytes field (embedded audio data)
                         if "bytes" in audio_data:
                             # Extract bytes and save to temp file first
@@ -595,11 +712,10 @@ class HFClient:
                                 # Replace audio field with just the path string
                                 example[audio_column] = str(dest_path)
                         else:
-                            # Unknown audio format (e.g., AudioDecoder object, array, etc.)
-                            # Skip audio extraction and set to None
+                            # Unknown audio format in dict
                             log.warning(
-                                "Unknown audio format, skipping audio extraction",
-                                audio_keys=list(audio_data.keys()) if isinstance(audio_data, dict) else type(audio_data).__name__,
+                                "Unknown audio format in dict, skipping audio extraction",
+                                audio_keys=list(audio_data.keys()),
                                 row=idx,
                             )
                             example[audio_column] = None
