@@ -450,6 +450,15 @@ class HFClient:
                                     raise
                                 # Replace audio field with just the path string
                                 example[audio_column] = str(dest_path)
+                        else:
+                            # Unknown audio format (e.g., AudioDecoder object, array, etc.)
+                            # Skip audio extraction and set to None
+                            log.warning(
+                                "Unknown audio format, skipping audio extraction",
+                                audio_keys=list(audio_data.keys()) if isinstance(audio_data, dict) else type(audio_data).__name__,
+                                row=idx,
+                            )
+                            example[audio_column] = None
                     elif isinstance(audio_data, bytes):
                         # Audio data is raw bytes, save to temp file and convert to MP3
                         filename = f"{idx}"
@@ -585,6 +594,15 @@ class HFClient:
                                     raise
                                 # Replace audio field with just the path string
                                 example[audio_column] = str(dest_path)
+                        else:
+                            # Unknown audio format (e.g., AudioDecoder object, array, etc.)
+                            # Skip audio extraction and set to None
+                            log.warning(
+                                "Unknown audio format, skipping audio extraction",
+                                audio_keys=list(audio_data.keys()) if isinstance(audio_data, dict) else type(audio_data).__name__,
+                                row=idx,
+                            )
+                            example[audio_column] = None
                     elif isinstance(audio_data, bytes):
                         # Audio data is raw bytes, save to temp file and convert to MP3
                         filename = f"{idx}"
@@ -678,6 +696,9 @@ class HFClient:
             if len(obj) > 1024:  # 1KB threshold
                 return f"<{len(obj)} bytes of binary data (skipped)>"
             return obj.decode("utf-8", errors="replace")
+        elif hasattr(obj, '__class__') and 'AudioDecoder' in obj.__class__.__name__:
+            # AudioDecoder or similar audio objects from torchcodec
+            return f"<{obj.__class__.__name__} object (skipped)>"
         else:
             return obj
 
