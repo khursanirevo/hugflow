@@ -1,187 +1,307 @@
 # Hugflow
 
-**Hugflow** is a GitOps-based declarative automation system for managing Hugging Face datasets on HGX infrastructure. It's a cleaner, simpler rewrite of hgx_hfdownloader with a focus on ease of use and maintainability.
+**Hugflow** is a GitOps-based declarative automation system for managing Hugging Face datasets. It automates dataset downloads via pull requests with progress tracking, validation, and auto-merge on success.
 
 ## Features
 
 - **Ultra-simple YAML** - Just 2 required fields (HF ID + description)
-- **No conversion** - Downloads datasets as-is, faster and simpler
-- **Clean code** - Modular architecture with clear separation of concerns
-- **Better state tracking** - JSON manifests vs log files
-- **Proven GitOps workflow** - Same pattern as hgx_hfdownloader
-- **Slack notifications** - Optional real-time progress updates
-- **Progress tracking** - Resume capability for long downloads
+- **Smart Audio Extraction** - Automatically extracts audio files to separate folder, metadata to JSON
+- **No Data Duplication** - Audio bytes removed from JSON, keeping only path references
+- **GitOps Workflow** - Create PR → Auto-download → Auto-merge
+- **Slack Notifications** - Optional real-time progress updates
+- **Resume Capability** - Progress tracking for long-running downloads
+- **Self-Hosted Runner** - Runs on your own infrastructure with unlimited timeout
+
+---
 
 ## Quick Start
 
-### 1. Installation
+### 1. Clone & Install
 
 ```bash
+git clone https://github.com/your-org/hugflow.git
+cd hugflow
 pip install -e .
+pip install datasets  # Required for dataset loading
 ```
 
-### 2. Configuration
+### 2. Configure
 
-Create a `.env` file from the example:
+Create a `.env` file (copy from `.env.example`):
 
 ```bash
-cp .env.example .env
-# Edit .env with your HF token, GitHub token, and Slack webhook (optional)
+# REQUIRED: Hugging Face token
+HF_TOKEN=hf_your_token_here
+
+# OPTIONAL: For GitHub features (PR comments, auto-merge)
+gh auth login  # Easiest method - no token needed!
+
+# OPTIONAL: Slack notifications
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T00/B00/XXX
+SLACK_CHANNEL=#ml-datasets
+
+# OPTIONAL: Custom storage location
+STORAGE_ROOT=/path/to/datasets  # Default: ./datasets
 ```
 
-### 3. Add a Dataset
-
-Create a YAML file in `requests/add/`:
-
-```yaml
-hf_id: "mozilla-foundation/common_voice_11_0"
-description: "Malay ASR training data"
-```
-
-### 4. Create a PR
+### 3. Initialize
 
 ```bash
-git add requests/add/common_voice.yaml
-git commit -m "Add Common Voice dataset"
-git push origin add-common-voice
-gh pr create --title "Add Common Voice" --body "Adding Malay ASR dataset"
+hugflow init
 ```
 
-### 5. GitHub Actions Takes Over
+This creates necessary directories:
+- `datasets/` - Downloaded datasets
+- `.hugflow-state/` - State tracking
 
-- Bot acknowledges PR with "Starting download..."
-- Dataset downloads to `./datasets/`
-- On success: Comments with path + auto-merges PR
-- On failure: Comments with error + keeps PR open
+---
+
+## Server Setup Guide
+
+### For Your Own Server/Infrastructure
+
+#### Step 1: Install GitHub Actions Self-Hosted Runner
+
+On your server (e.g., HGX machine):
+
+```bash
+# Create directory for runner
+sudo mkdir -p /opt/actions-runner
+cd /opt/actions-runner
+
+# Download latest runner
+sudo curl -o actions-runner-linux-x64.tar.gz -L https://github.com/actions/runner/releases/latest/download/actions-runner-linux-x64.tar.gz
+sudo tar xzf ./actions-runner-linux-x64.tar.gz
+
+# Configure runner
+sudo ./config.sh --url https://github.com/your-org/hugflow --token YOUR_RUNNER_TOKEN
+# Get token from: https://github.com/your-org/hugflow/settings/actions/runners/new
+
+# Install as service (auto-start on boot)
+sudo ./svc.sh install
+sudo ./svc.sh start
+```
+
+#### Step 2: Configure GitHub Secrets
+
+Go to your repo settings: `https://github.com/your-org/hugflow/settings/secrets/actions`
+
+Add these secrets:
+
+- **`HF_TOKEN`** (Required) - Get from: https://huggingface.co/settings/tokens
+- **`SLACK_WEBHOOK_URL`** (Optional) - Slack notifications
+
+**Note:** `GITHUB_TOKEN` is automatically provided by GitHub Actions, no need to add it.
+
+#### Step 3: Verify Runner
+
+Check runner status at: `https://github.com/your-org/hugflow/actions/runners`
+
+Should show:
+- ✅ Status: `online`
+- ✅ Labels: `self-hosted`, `Linux`, `X64`
+
+---
+
+## How to Add Datasets
+
+### Method 1: Via GitOps PR (Recommended)
+
+#### Step 1: Create YAML File
+
+```bash
+cd hugflow
+
+# Create YAML file
+cat > requests/add/my_dataset.yaml << EOF
+hf_id: "org/dataset-name"
+description: "Brief description of what this dataset is for"
+EOF
+```
+
+#### Step 2: Commit & Push
+
+```bash
+git add requests/add/my_dataset.yaml
+git commit -m "Add my-dataset for training"
+git push origin add-my-dataset
+```
+
+#### Step 3: Create Pull Request
+
+```bash
+gh pr create --title "Add my-dataset" --body "Adding dataset for training"
+```
+
+#### Step 4: Automation Takes Over
+
+- 🤖 Bot comments "Starting download..." on your PR
+- 📥 Dataset downloads to `datasets/` directory
+  - Audio files → `audio/` folder
+  - Metadata → `json/` folder
+- ✅ On success: Bot comments with location + auto-merges PR
+- ❌ On failure: Bot comments with error details + keeps PR open
+
+---
+
+### Method 2: Local Testing
+
+```bash
+# Validate YAML
+hugflow validate requests/add/my_dataset.yaml
+
+# Download locally (for testing)
+hugflow local-sync requests/add/my_dataset.yaml
+
+# Check status
+hugflow status
+```
+
+---
 
 ## YAML Schema
 
-### Add Dataset (Minimal)
+### Minimal (Recommended)
 
 ```yaml
 hf_id: "mozilla-foundation/common_voice_11_0"
 description: "Malay ASR training data"
 ```
 
-### Add Dataset (With Options)
+### With All Options
 
 ```yaml
 hf_id: "mozilla-foundation/common_voice_11_0"
 description: "Malay ASR training data"
-revision: "main"           # default: "main"
-subset: "ms"               # default: None (downloads all)
-split: "train"             # default: "train"
-audio_column: "audio"      # default: "audio"
-text_column: "text"        # default: "text"
+revision: "main"           # Git revision (default: "main")
+subset: "ms"               # Dataset subset/config (default: None)
+split: "train"             # Dataset split (default: "train")
+audio_column: "audio"      # Column containing audio (default: "audio")
+text_column: "text"        # Column containing text (default: "text")
 ```
 
 ### Remove Dataset
 
 ```yaml
 hf_id: "mozilla-foundation/common_voice_11_0"
-reason: "No longer needed"
+reason: "No longer needed, replaced with v12"
 ```
+
+---
+
+## Dataset Storage Structure
+
+After download, datasets are organized as:
+
+```
+datasets/
+└── org__dataset__subset_X__split_Y__rev_Z/     # Sanitized name
+    ├── audio/                                     # Audio files
+    │   ├── 0_original_filename.wav
+    │   └── ...
+    └── json/                                      # Metadata only (no audio bytes!)
+        ├── 0.json
+        │   ├── audio: "datasets/.../audio/0_xxx.wav"  # Path reference
+        │   ├── text: "Transcript here"
+        │   └── ...other metadata
+        └── ...
+```
+
+**Key Points:**
+- Audio files extracted to `audio/` (separate files)
+- JSON contains metadata + path to audio file (NOT embedded bytes)
+- No data duplication - saves ~900MB per 1801 files!
+
+---
+
+## Configuration
+
+### Required Settings
+
+| Setting | Description | Default |
+|----------|-------------|---------|
+| `HF_TOKEN` | Hugging Face API token | Required |
+| `STORAGE_ROOT` | Where datasets are stored | `./datasets` |
+
+### Optional Settings
+
+| Setting | Description | Default |
+|----------|-------------|---------|
+| `GITHUB_TOKEN` | GitHub token (or use `gh auth login`) | Auto-detect |
+| `SLACK_WEBHOOK_URL` | Slack notifications | Disabled |
+| `PROGRESS_INTERVAL` | Progress update frequency | 10000 files |
+| `MAX_CONCURRENT_DOWNLOADS` | Parallel downloads | 5 |
+| `AUTO_MERGE` | Auto-merge successful PRs | `true` |
+| `LOG_LEVEL` | Logging verbosity | `INFO` |
+
+See `.env.example` for all available settings.
+
+---
 
 ## CLI Commands
 
 ```bash
+# Initialize directories
+hugflow init
+
 # Validate YAML without applying
 hugflow validate <yaml-file>
 
 # Show status of all datasets
 hugflow status
 
-# Sync single dataset (local testing)
+# Download dataset locally (testing)
 hugflow local-sync <yaml-file>
-
-# Initialize directories
-hugflow init
 
 # Sync in CI mode (called by GitHub Actions)
 hugflow sync --ci-mode
+
+# Check version
+hugflow --version
 ```
 
-## Storage Layout
+---
 
-```
-datasets/
-├── mozilla-foundation__common_voice_11_0__rev_main/
-│   ├── audio/          # Audio files
-│   └── json/           # All other data as JSON
-├── mozilla-foundation__common_voice_11_0__subset_ms__split_train__rev_main/
-│   ├── audio/
-│   └── json/
+## Troubleshooting
 
-.hugflow-state/  # Gitignored
-├── active.json      # Currently managed datasets
-├── archived.json    # Historical operations
-└── progress/        # Download progress tracking
-```
+### Dataset Already Exists
 
-## Configuration
-
-All settings are configurable via environment variables in `.env`:
-
-- `HF_TOKEN` - Hugging Face API token (required)
-- `GITHUB_TOKEN` - GitHub token for PR operations (optional, see below)
-- `SLACK_WEBHOOK_URL` - Optional Slack webhook for notifications
-- `STORAGE_ROOT` - Dataset storage directory (default: `./datasets`)
-- `PROGRESS_INTERVAL` - Progress update interval (default: 10000 files)
-- `MAX_CONCURRENT_DOWNLOADS` - Concurrent download limit (default: 5)
-- `AUTO_MERGE` - Auto-merge successful PRs (default: true)
-
-See `.env.example` for all available settings.
-
-### GitHub Authentication (Two Options)
-
-Hugflow supports **two authentication methods** for GitHub operations:
-
-#### Option 1: GitHub Personal Access Token (Recommended for CI)
-
-Set `GITHUB_TOKEN` in your `.env` file:
+If you get "Dataset already exists in storage":
 
 ```bash
-# Create a token at: https://github.com/settings/tokens
-# Required scopes: repo (full control)
-GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# Option 1: Remove it and re-download
+hugflow remove <yaml-file>
+
+# Option 2: Use different subset/split
+# Edit your YAML to add:
+subset: "different_subset"
+split: "validation"
 ```
 
-**Use this for:**
-- CI/CD (GitHub Actions) - token is automatically provided
-- Testing PR operations locally
-- Automated scripts
+### GitHub Actions Timeout
 
-#### Option 2: GitHub CLI (`gh`) - Easiest for Local Dev
+Self-hosted runners have unlimited timeout, but if using GitHub-hosted runners, update workflow:
 
-Use `gh` CLI without setting any token:
-
-```bash
-# Install gh CLI: https://cli.github.com/
-# Authenticate once:
-gh auth login
-
-# Hugflow will auto-detect and use it!
-# No need to set GITHUB_TOKEN in .env
+```yaml
+# In .github/workflows/dataset-sync.yml
+timeout-minutes: 360  # 6 hours
 ```
 
-**Use this for:**
-- Local development and testing
-- Interactive workflows
-- When you don't want to manage tokens
+### Runner Not Triggering
 
-**How it works:**
-- Hugflow first tries to use `GITHUB_TOKEN` if set
-- Falls back to `gh CLI` if token not available
-- Disables GitHub features if neither is available (with warning)
+Check:
+1. Runner is online: https://github.com/your-org/hugflow/actions/runners
+2. Workflow file exists: `.github/workflows/dataset-sync.yml`
+3. PR modifies files in `requests/add/` or `requests/remove/`
 
-## GitOps Workflow
+### Audio Files Not Extracted
 
-1. User creates PR with YAML file in `requests/` directory
-2. GitHub Actions workflow triggers on PR (self-hosted runner on HGX)
-3. Bot acknowledges PR with "Starting download..." comment
-4. Downloads dataset and validates
-5. On success: Comments with path location and auto-merges PR
-6. On failure: Comments with error stack trace and keeps PR open
+Check that:
+1. Dataset actually has audio data column
+2. `audio_column` in YAML matches the column name in dataset
+3. Check logs for "Audio column exists but no audio files extracted" warning
+
+---
 
 ## Development
 
@@ -193,14 +313,93 @@ pip install -e ".[dev]"
 pytest
 
 # Run with coverage
-pytest --cov=hugflow
+pytest --cov=hugflow --cov-report=html
 
 # Type checking
 mypy hugflow
 ```
 
+---
+
+## Example: Adding Your First Dataset
+
+```bash
+# 1. Create YAML
+cat > requests/add/common_voice.yaml << EOF
+hf_id: "mozilla-foundation/common_voice_11_0"
+description: "Malay ASR training data for speech recognition"
+subset: "ms"
+split: "train"
+EOF
+
+# 2. Validate
+hugflow validate requests/add/common_voice.yaml
+
+# 3. Commit & Push
+git add requests/add/common_voice.yaml
+git commit -m "Add Common Voice Malay dataset"
+git push origin add-common-voice
+
+# 4. Create PR
+gh pr create --title "Add Common Voice Malay" \
+  --body "Adding Malay subset of Common Voice v11 for ASR training"
+
+# 5. Watch progress
+# - Bot will comment on PR
+# - If Slack configured: get notifications in #ml-datasets
+# - Dataset downloads in background
+# - On success: auto-merged, ready to use!
+```
+
+---
+
+## How It Works
+
+### Data Flow
+
+```
+User PR → GitHub Actions → Self-Hosted Runner → Download Dataset
+                                              ↓
+                                         Audio files → audio/
+                                         Metadata → json/ (with path refs)
+                                              ↓
+                                         Update manifests
+                                              ↓
+                                         Comment success + auto-merge
+```
+
+### Idempotency
+
+- **Duplicate Detection**: Won't re-download if dataset exists
+- **Resume Capability**: If interrupted, resumes from last checkpoint
+- **Clean Removal**: `remove` command cleans up both files and manifests
+
+### Progress Tracking
+
+For large datasets (1000+ files), progress updates are posted every 10,000 files:
+- PR comment (if GitHub features enabled)
+- Slack notification (if configured)
+- Progress file: `.hugflow-state/progress/{dataset}.json`
+
+---
+
+## Architecture
+
+```
+hugflow/
+├── cli.py              # Typer CLI interface
+├── config.py           # Pydantic schemas + env loading
+├── gitops.py           # GitHub PR handling
+├── slack.py            # Slack notifications
+├── hf_client.py        # HuggingFace API wrapper
+├── storage.py          # File system operations
+├── validator.py        # Validation logic
+├── audit.py            # Logging/audit trail
+└── sync.py             # Main sync orchestration
+```
+
+---
+
 ## License
 
 MIT
-# Audio Extraction Test
-deleted
