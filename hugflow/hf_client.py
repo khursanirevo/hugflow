@@ -296,6 +296,8 @@ class HFClient:
         for idx, example in enumerate(dataset):
             try:
                 # Process audio if present
+                audio_file_path = None  # Track extracted audio file path
+
                 if audio_column in example:
                     audio_data = example[audio_column]
                     if isinstance(audio_data, dict):
@@ -315,6 +317,10 @@ class HFClient:
                             audio_files += 1
                             total_size += len(audio_bytes)
                             downloaded_files += 1
+                            # Keep track of the audio file path for JSON reference
+                            audio_file_path = str(dest_path)
+                            # Remove the bytes field from the example to avoid duplication in JSON
+                            example[audio_column] = {"path": audio_file_path}
                         # Handle dict with path field (file reference)
                         elif "path" in audio_data:
                             src_path = Path(audio_data["path"])
@@ -324,6 +330,10 @@ class HFClient:
                                 audio_files += 1
                                 total_size += dest_path.stat().st_size
                                 downloaded_files += 1
+                                # Keep track of the audio file path for JSON reference
+                                audio_file_path = str(dest_path)
+                                # Update the path to point to the copied location
+                                example[audio_column] = {"path": audio_file_path}
                     elif isinstance(audio_data, bytes):
                         # Audio data is raw bytes, save to file
                         dest_path = audio_dir / f"{idx}.wav"
@@ -332,11 +342,15 @@ class HFClient:
                         audio_files += 1
                         total_size += len(audio_data)
                         downloaded_files += 1
+                        # Keep track of the audio file path for JSON reference
+                        audio_file_path = str(dest_path)
+                        # Replace bytes with path reference
+                        example[audio_column] = {"path": audio_file_path}
 
-                # Save all data as JSON
+                # Save metadata as JSON (without audio bytes, just path reference)
                 json_path = json_dir / f"{idx}.json"
                 with open(json_path, "w") as f:
-                    # Convert to JSON-serializable format
+                    # Convert to JSON-serializable format (bytes already removed above)
                     json.dump(self._make_json_serializable(example), f, indent=2)
                 json_files += 1
                 downloaded_files += 1
@@ -389,6 +403,8 @@ class HFClient:
         for idx, example in enumerate(dataset):
             try:
                 # Process audio if present
+                audio_file_path = None  # Track extracted audio file path
+
                 if audio_column in example:
                     audio_data = example[audio_column]
                     if isinstance(audio_data, dict):
@@ -408,6 +424,10 @@ class HFClient:
                             audio_files += 1
                             total_size += len(audio_bytes)
                             downloaded_files += 1
+                            # Keep track of the audio file path for JSON reference
+                            audio_file_path = str(dest_path)
+                            # Remove the bytes field from the example to avoid duplication in JSON
+                            example[audio_column] = {"path": audio_file_path}
                         # Handle dict with path field (file reference)
                         elif "path" in audio_data:
                             src_path = Path(audio_data["path"])
@@ -417,6 +437,10 @@ class HFClient:
                                 audio_files += 1
                                 total_size += dest_path.stat().st_size
                                 downloaded_files += 1
+                                # Keep track of the audio file path for JSON reference
+                                audio_file_path = str(dest_path)
+                                # Update the path to point to the copied location
+                                example[audio_column] = {"path": audio_file_path}
                     elif isinstance(audio_data, bytes):
                         # Audio data is raw bytes, save to file
                         dest_path = audio_dir / f"{idx}.wav"
@@ -425,11 +449,15 @@ class HFClient:
                         audio_files += 1
                         total_size += len(audio_data)
                         downloaded_files += 1
+                        # Keep track of the audio file path for JSON reference
+                        audio_file_path = str(dest_path)
+                        # Replace bytes with path reference
+                        example[audio_column] = {"path": audio_file_path}
 
-                # Save all data as JSON
+                # Save metadata as JSON (without audio bytes, just path reference)
                 json_path = json_dir / f"{idx}.json"
                 with open(json_path, "w") as f:
-                    # Convert to JSON-serializable format
+                    # Convert to JSON-serializable format (bytes already removed above)
                     json.dump(self._make_json_serializable(example), f, indent=2)
                 json_files += 1
                 downloaded_files += 1
@@ -478,6 +506,7 @@ class HFClient:
         Convert an object to JSON-serializable format.
 
         Handles common non-serializable types from datasets.
+        Skips large bytes fields to avoid bloating JSON files.
         """
         import numpy as np
 
@@ -492,6 +521,10 @@ class HFClient:
         elif isinstance(obj, (np.floating, np.float64, np.float32)):
             return float(obj)
         elif isinstance(obj, bytes):
+            # Skip large byte fields (likely audio/video data) to avoid bloating JSON
+            # Only decode small byte fields (metadata, etc.)
+            if len(obj) > 1024:  # 1KB threshold
+                return f"<{len(obj)} bytes of binary data (skipped)>"
             return obj.decode("utf-8", errors="replace")
         else:
             return obj
