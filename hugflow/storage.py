@@ -214,11 +214,24 @@ class StorageManager:
             spec: Dataset specification
 
         Returns:
-            True if dataset exists
+            True if dataset exists and has files
         """
         storage_name = spec.storage_name
         dataset_path = self.storage_root / storage_name
-        return dataset_path.exists()
+
+        if not dataset_path.exists():
+            return False
+
+        # Check if the dataset has actual files (not just empty directories)
+        audio_dir = dataset_path / AUDIO_DIR
+        json_dir = dataset_path / JSON_DIR
+
+        # Count files in both directories
+        audio_files = list(audio_dir.glob("*")) if audio_dir.exists() else []
+        json_files = list(json_dir.glob("*")) if json_dir.exists() else []
+
+        # Only consider the dataset as existing if it has files
+        return len(audio_files) > 0 or len(json_files) > 0
 
     def get_storage_usage(self) -> Dict[str, Any]:
         """
