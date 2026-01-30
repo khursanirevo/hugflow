@@ -15,6 +15,7 @@ dependencies = [
     "pyyaml>=6.0.0",
     "rich>=13.0.0",
     "pydub>=0.25.0",
+    "torch>=2.0.0",
     "torchcodec>=0.1.0",
 ]
 
