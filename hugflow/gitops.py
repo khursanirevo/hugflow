@@ -42,17 +42,38 @@ class GitOpsManager:
         self.last_comment_time: Optional[datetime] = None
         self.last_comment_percent: float = 0.0
 
+        # Debug: Log GitHub config values
+        logger.info("GitHub config",
+                    enabled=config.github.enabled,
+                    has_token=bool(config.github.token),
+                    token_prefix=config.github.token[:10] if config.github.token else None,
+                    has_repo=bool(config.github.repo),
+                    repo=config.github.repo)
+
         # Try to initialize with GitHub token (for CI)
         if config.github.enabled and config.github.token:
-            self.github = Github(config.github.token)
             try:
+                # Check if PyGithub is available
+                from github import Github
+                logger.info("PyGithub is available")
+                self.github = Github(config.github.token)
                 self.repo = self.github.get_repo(config.github.repo)
-                logger.info("Using GitHub token for authentication")
+                logger.info("Using GitHub token for authentication", repo=config.github.repo)
+            except ImportError as e:
+                logger.error("PyGithub not installed", error=str(e))
+                self.github = None
+                self.repo = None
             except Exception as e:
-                logger.warning("Failed to initialize GitHub client with token", error=str(e))
+                logger.warning("Failed to initialize GitHub client with token",
+                             error=str(e),
+                             error_type=type(e).__name__)
                 self.github = None
                 self.repo = None
         else:
+            logger.info("GitHub token not available or not enabled",
+                       enabled=config.github.enabled,
+                       has_token=bool(config.github.token),
+                       has_repo=bool(config.github.repo))
             self.github = None
             self.repo = None
 
@@ -206,16 +227,14 @@ class GitOpsManager:
         """
         pr_number = pr_number or self.pr_number
 
-        if not pr_number or not self.repo:
-            logger.warning("Cannot comment: PR number or repo not available")
+        if not pr_number:
+            logger.warning("Cannot comment: PR number not available")
             return
 
         log = logger.bind(pr_number=pr_number, dataset_name=dataset_name)
-        log.info("Posting start comment")
+        log.info("Posting start comment", has_py=bool(self.repo), use_gh_cli=self.use_gh_cli)
 
-        try:
-            pull_request = self.repo.get_pull(pr_number)
-            comment = f"""### 🚀 Starting Download
+        comment = f"""### 🚀 Starting Download
 
 Downloading dataset: **{dataset_name}**
 
@@ -226,13 +245,31 @@ I'll post progress updates:
 - Every hour if no recent update
 - Always on completion
 """
-            pull_request.create_comment(comment)
-            self.last_comment_time = datetime.utcnow()
-            self.last_comment_percent = 0.0
-            log.info("Start comment posted successfully")
 
-        except Exception as e:
-            log.warning("Failed to post start comment", error=str(e))
+        # Try PyGithub first
+        if self.repo:
+            try:
+                pull_request = self.repo.get_pull(pr_number)
+                pull_request.create_comment(comment)
+                self.last_comment_time = datetime.utcnow()
+                self.last_comment_percent = 0.0
+                log.info("Start comment posted successfully via PyGithub")
+                return
+            except Exception as e:
+                log.warning("Failed to post via PyGithub, trying gh CLI", error=str(e))
+
+        # Fall back to gh CLI
+        if self.use_gh_cli:
+            try:
+                self._run_gh(["pr", "comment", str(pr_number), "--body", comment])
+                self.last_comment_time = datetime.utcnow()
+                self.last_comment_percent = 0.0
+                log.info("Start comment posted successfully via gh CLI")
+                return
+            except Exception as e:
+                log.warning("Failed to post via gh CLI", error=str(e))
+
+        log.error("Failed to post start comment: no authentication method available")
 
     def comment_progress(
         self,
@@ -262,8 +299,8 @@ I'll post progress updates:
         """
         pr_number = pr_number or self.pr_number
 
-        if not pr_number or not self.repo:
-            logger.warning("Cannot comment: PR number or repo not available")
+        if not pr_number:
+            logger.warning("Cannot comment: PR number not available")
             return
 
         log = logger.bind(pr_number=pr_number, dataset_name=dataset_name, downloaded=downloaded, total=total)
@@ -304,9 +341,7 @@ I'll post progress updates:
 
         log.info("Posting progress comment", reason=reason)
 
-        try:
-            pull_request = self.repo.get_pull(pr_number)
-            comment = f"""### 📥 Download Progress
+        comment = f"""### 📥 Download Progress
 
 **Dataset:** {dataset_name}
 **Progress:** {downloaded:,} / {total:,} files ({percent:.1f}%)
@@ -314,17 +349,38 @@ I'll post progress updates:
 
 Currently downloading...
 """
-            pull_request.create_comment(comment)
 
-            # Update tracking
-            self.last_comment_time = current_time
-            self.last_comment_percent = percent
-            log.info("Progress comment posted successfully",
-                     percent=percent,
-                     reason=reason)
+        # Try PyGithub first
+        if self.repo:
+            try:
+                pull_request = self.repo.get_pull(pr_number)
+                pull_request.create_comment(comment)
 
-        except Exception as e:
-            log.warning("Failed to post progress comment", error=str(e))
+                # Update tracking
+                self.last_comment_time = current_time
+                self.last_comment_percent = percent
+                log.info("Progress comment posted successfully via PyGithub",
+                         percent=percent,
+                         reason=reason)
+                return
+            except Exception as e:
+                log.warning("Failed to post via PyGithub, trying gh CLI", error=str(e))
+
+        # Fall back to gh CLI
+        if self.use_gh_cli:
+            try:
+                self._run_gh(["pr", "comment", str(pr_number), "--body", comment])
+                # Update tracking
+                self.last_comment_time = current_time
+                self.last_comment_percent = percent
+                log.info("Progress comment posted successfully via gh CLI",
+                         percent=percent,
+                         reason=reason)
+                return
+            except Exception as e:
+                log.warning("Failed to post via gh CLI", error=str(e))
+
+        log.error("Failed to post progress comment: no authentication method available")
 
     def comment_success(
         self,
@@ -344,16 +400,14 @@ Currently downloading...
         """
         pr_number = pr_number or self.pr_number
 
-        if not pr_number or not self.repo:
-            logger.warning("Cannot comment: PR number or repo not available")
+        if not pr_number:
+            logger.warning("Cannot comment: PR number not available")
             return
 
         log = logger.bind(pr_number=pr_number, dataset_name=dataset_name, file_count=file_count)
         log.info("Posting success comment")
 
-        try:
-            pull_request = self.repo.get_pull(pr_number)
-            comment = f"""### ✅ Download Complete!
+        comment = f"""### ✅ Download Complete!
 
 **Dataset:** {dataset_name}
 **Files downloaded:** {file_count:,}
@@ -361,16 +415,37 @@ Currently downloading...
 
 Auto-merging PR...
 """
-            pull_request.create_comment(comment)
 
-            # Auto-merge if configured
-            if self.config.behavior.auto_merge:
-                self.merge_pr(pr_number)
+        # Try PyGithub first
+        if self.repo:
+            try:
+                pull_request = self.repo.get_pull(pr_number)
+                pull_request.create_comment(comment)
+                log.info("Success comment posted via PyGithub")
 
-            log.info("Success comment posted, PR merged")
+                # Auto-merge if configured
+                if self.config.behavior.auto_merge:
+                    self.merge_pr(pr_number)
 
-        except Exception as e:
-            log.warning("Failed to post success comment", error=str(e))
+                return
+            except Exception as e:
+                log.warning("Failed to post via PyGithub, trying gh CLI", error=str(e))
+
+        # Fall back to gh CLI
+        if self.use_gh_cli:
+            try:
+                self._run_gh(["pr", "comment", str(pr_number), "--body", comment])
+                log.info("Success comment posted via gh CLI")
+
+                # Auto-merge if configured
+                if self.config.behavior.auto_merge:
+                    self.merge_pr(pr_number)
+
+                return
+            except Exception as e:
+                log.warning("Failed to post via gh CLI", error=str(e))
+
+        log.error("Failed to post success comment: no authentication method available")
 
     def comment_failure(
         self,
@@ -392,17 +467,14 @@ Auto-merging PR...
         """
         pr_number = pr_number or self.pr_number
 
-        if not pr_number or not self.repo:
-            logger.warning("Cannot comment: PR number or repo not available")
+        if not pr_number:
+            logger.warning("Cannot comment: PR number not available")
             return
 
         log = logger.bind(pr_number=pr_number, dataset_name=dataset_name, error_type=error_type)
         log.info("Posting failure comment")
 
-        try:
-            pull_request = self.repo.get_pull(pr_number)
-
-            comment = f"""### ❌ Failed to download dataset
+        comment = f"""### ❌ Failed to download dataset
 
 **Dataset:** {dataset_name}
 **Error:** {error_type or "Unknown error"}
@@ -413,18 +485,33 @@ Auto-merging PR...
 **Error:** {error}
 
 """
-            if suggestion:
-                comment += f"**💡 Suggestion:** {suggestion}\n\n"
+        if suggestion:
+            comment += f"**💡 Suggestion:** {suggestion}\n\n"
 
-            comment += """Please fix the YAML and push a new commit.
+        comment += """Please fix the YAML and push a new commit.
 </details>
 """
 
-            pull_request.create_comment(comment)
-            log.info("Failure comment posted successfully")
+        # Try PyGithub first
+        if self.repo:
+            try:
+                pull_request = self.repo.get_pull(pr_number)
+                pull_request.create_comment(comment)
+                log.info("Failure comment posted successfully via PyGithub")
+                return
+            except Exception as e:
+                log.warning("Failed to post via PyGithub, trying gh CLI", error=str(e))
 
-        except Exception as e:
-            log.warning("Failed to post failure comment", error=str(e))
+        # Fall back to gh CLI
+        if self.use_gh_cli:
+            try:
+                self._run_gh(["pr", "comment", str(pr_number), "--body", comment])
+                log.info("Failure comment posted successfully via gh CLI")
+                return
+            except Exception as e:
+                log.warning("Failed to post via gh CLI", error=str(e))
+
+        log.error("Failed to post failure comment: no authentication method available")
 
     def merge_pr(self, pr_number: Optional[int] = None) -> None:
         """
