@@ -1,3 +1,3 @@
-# Test smart progress updates
+# Test PR with fixed env vars
 hf_id: "Revolab/repetitive_conversations"
-description: "Test dataset for smart progress updates - 113K audio files"
+description: "Test with double underscore env vars (GITHUB__TOKEN, HF__TOKEN)"
