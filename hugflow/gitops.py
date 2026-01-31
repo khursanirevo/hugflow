@@ -5,7 +5,7 @@ GitOps integration for GitHub PR handling.
 import json
 import os
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -37,6 +37,10 @@ class GitOpsManager:
         self.pr_number = None
         self.repo = None
         self.use_gh_cli = False
+
+        # Track last comment for smart progress updates
+        self.last_comment_time: Optional[datetime] = None
+        self.last_comment_percent: float = 0.0
 
         # Try to initialize with GitHub token (for CI)
         if config.github.enabled and config.github.token:
@@ -217,9 +221,14 @@ Downloading dataset: **{dataset_name}**
 
 This may take hours or days depending on size.
 
-I'll post progress updates every {self.config.download.pr_comment_interval} files.
+I'll post progress updates:
+- Every 20% completion
+- Every hour if no recent update
+- Always on completion
 """
             pull_request.create_comment(comment)
+            self.last_comment_time = datetime.utcnow()
+            self.last_comment_percent = 0.0
             log.info("Start comment posted successfully")
 
         except Exception as e:
@@ -237,6 +246,12 @@ I'll post progress updates every {self.config.download.pr_comment_interval} file
         """
         Post progress update comment on PR.
 
+        Smart progress updates:
+        - Always comment on completion (100%)
+        - Comment every 20% progress (20%, 40%, 60%, 80%)
+        - Comment every 1 hour if no recent comment
+        - Never comment twice within 1 hour (unless completing)
+
         Args:
             pr_number: PR number
             dataset_name: Name of dataset
@@ -252,7 +267,42 @@ I'll post progress updates every {self.config.download.pr_comment_interval} file
             return
 
         log = logger.bind(pr_number=pr_number, dataset_name=dataset_name, downloaded=downloaded, total=total)
-        log.debug("Posting progress comment")
+
+        # Check if we should comment
+        should_comment = False
+        reason = ""
+
+        current_time = datetime.utcnow()
+
+        # Always comment on completion
+        if percent >= 100.0:
+            should_comment = True
+            reason = "Download complete"
+        # Check if 20% progress increase since last comment
+        elif self.last_comment_time is not None:
+            percent_increase = percent - self.last_comment_percent
+            if percent_increase >= 20.0:
+                should_comment = True
+                reason = f"Progress increased by {percent_increase:.0f}%"
+            # Check if 1 hour passed since last comment
+            else:
+                time_since_last = current_time - self.last_comment_time
+                if time_since_last >= timedelta(hours=1):
+                    should_comment = True
+                    reason = f"Time since last comment: {time_since_last.total_seconds() / 3600:.1f} hours"
+        # First progress update (no previous comment)
+        elif self.last_comment_time is None:
+            should_comment = True
+            reason = "First progress update"
+
+        if not should_comment:
+            log.debug("Skipping progress comment",
+                     last_percent=self.last_comment_percent,
+                     current_percent=percent,
+                     last_time=self.last_comment_time)
+            return
+
+        log.info("Posting progress comment", reason=reason)
 
         try:
             pull_request = self.repo.get_pull(pr_number)
@@ -265,7 +315,13 @@ I'll post progress updates every {self.config.download.pr_comment_interval} file
 Currently downloading...
 """
             pull_request.create_comment(comment)
-            log.info("Progress comment posted successfully")
+
+            # Update tracking
+            self.last_comment_time = current_time
+            self.last_comment_percent = percent
+            log.info("Progress comment posted successfully",
+                     percent=percent,
+                     reason=reason)
 
         except Exception as e:
             log.warning("Failed to post progress comment", error=str(e))
