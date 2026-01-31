@@ -1,2 +1,3 @@
+# Request: Add Revolab repetitive conversations dataset
 hf_id: "Revolab/repetitive_conversations"
 description: "Repetitive conversations dataset for testing - 113K audio files"
