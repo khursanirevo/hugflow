@@ -1,0 +1,3 @@
+# Test smart progress updates (with fixed env vars)
+hf_id: "Revolab/synthetic-diacritized-MADAR-jordanian-text"
+description: "Testing first time model"
