@@ -5,8 +5,12 @@ Configuration and Pydantic schemas for Hugflow.
 from pathlib import Path
 from typing import Literal, Optional
 
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Load .env file if it exists
+load_dotenv()
 
 
 class DatasetSpec(BaseModel):
@@ -63,7 +67,7 @@ class RemoveSpec(BaseModel):
 class HFConfig(BaseModel):
     """Hugging Face API configuration."""
 
-    token: str = Field(default="", env="HF_TOKEN")
+    token: str = Field(default="")
 
 
 class GitHubConfig(BaseModel):
@@ -94,8 +98,14 @@ class SlackConfig(BaseModel):
 class StorageConfig(BaseModel):
     """Storage configuration."""
 
-    root: str = Field(default="./datasets", env="STORAGE_ROOT")
-    state_dir: str = Field(default=".hugflow-state", env="STATE_DIR")
+    root: str
+    state_dir: str
+
+    @classmethod
+    def from_constants(cls) -> "StorageConfig":
+        """Create StorageConfig from constants."""
+        from hugflow.constants import STORAGE_ROOT, STATE_DIR
+        return cls(root=STORAGE_ROOT, state_dir=STATE_DIR)
 
 
 class DownloadConfig(BaseModel):
@@ -148,7 +158,7 @@ class LoggingConfig(BaseModel):
 class BehaviorConfig(BaseModel):
     """System behavior configuration."""
 
-    auto_merge: bool = Field(default=True, env="AUTO_MERGE")
+    auto_merge: bool = Field(default=False, env="AUTO_MERGE")
     auto_cleanup_requests: bool = Field(default=True, env="AUTO_CLEANUP_REQUESTS")
     cleanup_progress_on_success: bool = Field(default=True, env="CLEANUP_PROGRESS_ON_SUCCESS")
 
@@ -167,7 +177,7 @@ class Config(BaseSettings):
     hf: HFConfig = Field(default_factory=HFConfig)
     github: GitHubConfig = Field(default_factory=GitHubConfig)
     slack: SlackConfig = Field(default_factory=SlackConfig)
-    storage: StorageConfig = Field(default_factory=StorageConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig.from_constants)
     download: DownloadConfig = Field(default_factory=DownloadConfig)
     network: NetworkConfig = Field(default_factory=NetworkConfig)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
@@ -178,10 +188,12 @@ class Config(BaseSettings):
     def validate_tokens(self) -> "Config":
         """Validate that required tokens are available for their respective features."""
         # HF token is required for downloads
+        # Support both HF_TOKEN (legacy) and HF__TOKEN (nested format)
         if not self.hf.token:
-            # In CI mode, this will be provided by GitHub Actions
-            # For local development, we'll allow it to be empty for validation-only commands
-            pass
+            import os
+            hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HF__TOKEN", "")
+            if hf_token:
+                object.__setattr__(self.hf, "token", hf_token)
         return self
 
 

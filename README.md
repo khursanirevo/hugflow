@@ -1,6 +1,6 @@
 # Hugflow
 
-**Hugflow** is a GitOps-based declarative automation system for managing Hugging Face datasets. It automates dataset downloads via pull requests with progress tracking, validation, and auto-merge on success.
+**Hugflow** is a GitOps-based declarative automation system for managing Hugging Face datasets. It automates dataset downloads via pull requests with progress tracking, validation, and manual merge on success.
 
 ## Features
 
@@ -11,9 +11,9 @@
 - **Optimized Storage** - Audio converted to MP3 with original sample rate preserved, mono channel for safety
 - **No Data Duplication** - Audio bytes removed from JSON, keeping only path references
 - **Processed Symlinks** - Auto-creates symlinks in `/mnt/data/processed/{dataset_name}` for easy access
-- **GitOps Workflow** - Create PR → Auto-download → Auto-merge
+- **GitOps Workflow** - Create PR → Auto-download → Manual review & merge
 - **Slack Notifications** - Optional real-time progress updates
-- **Resume Capability** - Progress tracking for long-running downloads
+- **Resume Capability** - Interrupted downloads automatically resume from the last successful row
 - **Self-Hosted Runner** - Runs on your own infrastructure with unlimited timeout
 
 ---
@@ -41,7 +41,7 @@ Create a `.env` file (copy from `.env.example`):
 # REQUIRED: Hugging Face token
 HF_TOKEN=hf_your_token_here
 
-# OPTIONAL: For GitHub features (PR comments, auto-merge)
+# OPTIONAL: For GitHub features (PR comments, manual merge required)
 gh auth login  # Easiest method - no token needed!
 
 # OPTIONAL: Slack notifications
@@ -147,7 +147,7 @@ gh pr create --title "Add my-dataset" --body "Adding dataset for training"
 - 📥 Dataset downloads to `datasets/` directory
   - Audio files → `audio/` folder
   - Metadata → `json/` folder
-- ✅ On success: Bot comments with location + auto-merges PR
+- ✅ On success: Bot comments with location + PR ready for manual review
 - ❌ On failure: Bot comments with error details + keeps PR open
 
 ---
@@ -255,7 +255,7 @@ Hugflow automatically detects and handles multiple audio formats:
 | `SLACK_WEBHOOK_URL` | Slack notifications | Disabled |
 | `PROGRESS_INTERVAL` | Progress update frequency | 10000 files |
 | `MAX_CONCURRENT_DOWNLOADS` | Parallel downloads | 5 |
-| `AUTO_MERGE` | Auto-merge successful PRs | `true` |
+| `AUTO_MERGE` | Auto-merge successful PRs (requires manual merge by default) | `false` |
 | `LOG_LEVEL` | Logging verbosity | `INFO` |
 
 See `.env.example` for all available settings.
@@ -391,7 +391,7 @@ gh pr create --title "Add Common Voice Malay" \
 # - Bot will comment on PR
 # - If Slack configured: get notifications in #ml-datasets
 # - Dataset downloads in background
-# - On success: auto-merged, ready to use!
+# - On success: Review PR and merge manually
 ```
 
 ---
@@ -412,13 +412,16 @@ User PR → GitHub Actions → Self-Hosted Runner → Download Dataset
                                               ↓
                                          Update manifests
                                               ↓
-                                         Comment success + auto-merge
+                                         Comment success + manual merge
 ```
 
 ### Idempotency
 
-- **Duplicate Detection**: Won't re-download if dataset exists
-- **Resume Capability**: If interrupted, resumes from last checkpoint
+- **Duplicate Detection**: Won't re-download if dataset exists and is complete
+- **Resume Capability**: If interrupted, automatically resumes from last successful row
+  - Tracks which specific rows/files have been downloaded
+  - Skips already-completed rows on resume
+  - Uses atomic file operations (temp file + rename) to prevent corruption
 - **Clean Removal**: `remove` command cleans up both files and manifests
 
 ### Progress Tracking
@@ -427,6 +430,41 @@ For large datasets (1000+ files), progress updates are posted every 10,000 files
 - PR comment (if GitHub features enabled)
 - Slack notification (if configured)
 - Progress file: `.hugflow-state/progress/{dataset}.json`
+
+#### Resume Capability Details
+
+When a download is interrupted (network failure, runner restart, etc.), the system automatically resumes:
+
+**How it works:**
+1. **Row-level tracking**: Each successfully downloaded row is tracked in the progress file
+2. **Atomic writes**: JSON files are written to `.tmp` first, then renamed atomically
+3. **Auto-resume**: On restart, completed rows are skipped, downloading continues from the last successful row
+4. **Completion detection**: System verifies if a download is truly complete before cleanup
+
+**Progress file format** (`.hugflow-state/progress/{dataset}.json`):
+```json
+{
+  "dataset_name": "org/dataset",
+  "status": "downloading",
+  "downloaded_files": 1500,
+  "total_files": 10000,
+  "percent_complete": 15.0,
+  "resumed_from": 1000,
+  "newly_downloaded": 500,
+  "resume_data": {
+    "completed_rows": [0, 1, 2, ..., 1499],
+    "last_successful_row": 1499,
+    "expected_total_rows": 10000,
+    "version": "2.0"
+  }
+}
+```
+
+**Interruption scenarios handled:**
+- Network failure during download
+- GitHub Actions runner restart
+- Process killed (SIGTERM/SIGINT)
+- Disk full (after freeing space, resume continues)
 
 ---
 

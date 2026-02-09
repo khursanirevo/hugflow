@@ -132,6 +132,15 @@ class AssetValidator:
         # Check if storage name already exists
         for active_spec in active_specs:
             if active_spec.get("storage_name") == spec.storage_name:
+                # Verify the dataset actually exists on disk (not just in manifest)
+                from hugflow.storage import StorageManager
+                storage = StorageManager(self.config)
+
+                if not storage.dataset_exists(spec, check_complete=True):
+                    # Dataset is in manifest but download is incomplete or missing - allow resume
+                    log.info("Dataset in manifest but download is incomplete - allowing resume", existing=active_spec)
+                    return
+
                 log.error("Duplicate dataset found", existing=active_spec)
                 raise DuplicateDatasetError(
                     f"Dataset '{spec.hf_id}' (subset={spec.subset}, split={spec.split}, "

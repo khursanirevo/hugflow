@@ -5,7 +5,7 @@ Hugging Face API client for dataset operations.
 import json
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.utils import HfHubHTTPError, RepositoryNotFoundError
@@ -220,9 +220,10 @@ class HFClient:
         audio_column: str = "audio",
         text_column: str = "text",
         progress_callback=None,
+        spec=None,  # DatasetSpec for resume tracking
     ) -> Dict[str, Any]:
         """
-        Download a dataset from HuggingFace Hub.
+        Download a dataset from HuggingFace Hub with resume capability.
 
         Downloads audio files to audio/ directory and everything else to json/.
 
@@ -235,6 +236,7 @@ class HFClient:
             audio_column: Name of column containing audio data
             text_column: Name of column containing text data
             progress_callback: Optional callback function(downloaded, total, current_file)
+            spec: DatasetSpec for resume tracking (optional)
 
         Returns:
             Dictionary with download statistics:
@@ -345,6 +347,24 @@ class HFClient:
         # Check if it's a streaming dataset or in-memory
         is_streaming = hasattr(dataset, "_excelecutor") and hasattr(dataset, "_streaming")
 
+        # Load resume state if spec provided
+        resume_from = 0
+        completed_rows: Set[int] = set()
+
+        if spec:
+            from hugflow.storage import StorageManager
+
+            storage = StorageManager(self.config)
+            resume_from = storage.get_download_resume_point(spec)
+            resume_state = storage.load_resume_state(spec)
+            if resume_state:
+                completed_rows = resume_state.completed_rows
+                log.info(
+                    "Resuming download",
+                    from_row=resume_from,
+                    completed_count=len(completed_rows),
+                )
+
         if is_streaming:
             log.info("Dataset is in streaming mode, processing...")
             return self._process_streaming_dataset(
@@ -354,6 +374,9 @@ class HFClient:
                 audio_column,
                 text_column,
                 progress_callback,
+                resume_from=resume_from,
+                completed_rows=completed_rows,
+                spec=spec,
             )
         else:
             log.info("Dataset is loaded in memory", num_rows=len(dataset))
@@ -364,6 +387,9 @@ class HFClient:
                 audio_column,
                 text_column,
                 progress_callback,
+                resume_from=resume_from,
+                completed_rows=completed_rows,
+                spec=spec,
             )
 
     def _process_streaming_dataset(
@@ -374,18 +400,26 @@ class HFClient:
         audio_column: str,
         text_column: str,
         progress_callback=None,
+        resume_from: int = 0,
+        completed_rows: Optional[Set[int]] = None,
+        spec=None,  # DatasetSpec for resume tracking
     ) -> Dict[str, Any]:
-        """Process a streaming dataset."""
+        """Process a streaming dataset with resume capability."""
         import shutil
 
         log = logger.bind()
-        log.info("Processing streaming dataset")
+        log.info("Processing streaming dataset", resume_from=resume_from)
+
+        # Initialize resume state
+        if completed_rows is None:
+            completed_rows = set()
 
         # For streaming datasets, we need to iterate and download
         downloaded_files = 0
         audio_files = 0
         json_files = 0
         total_size = 0
+        newly_downloaded = 0  # Track new downloads in this session
 
         # Get total count if available (may not be for streaming)
         try:
@@ -394,9 +428,34 @@ class HFClient:
             total_files = 0  # Unknown for streaming
 
         for idx, example in enumerate(dataset):
+            # Skip already completed rows (from resume state)
+            if idx in completed_rows:
+                log.debug("Skipping completed row (from resume state)", row=idx)
+                continue
+
+            # Also check if files already exist on disk (in case resume state is behind)
+            # This handles cases where process was interrupted before state was saved
+            expected_audio_path = audio_dir / f"{idx}.mp3"
+            expected_json_path = json_dir / f"{idx}.json"
+
+            # Check if both files exist and are non-empty
+            audio_exists = expected_audio_path.exists() and expected_audio_path.stat().st_size > 0
+            json_exists = expected_json_path.exists() and expected_json_path.stat().st_size > 0
+
+            # For rows without audio, only check json file
+            has_audio = audio_column in example
+
+            if (has_audio and audio_exists and json_exists) or (not has_audio and json_exists):
+                log.debug("Skipping already processed row (files exist on disk)", row=idx)
+                # Add to completed rows so we don't check disk again for this row
+                completed_rows.add(idx)
+                downloaded_files += 1
+                continue
+
             try:
                 # Process audio if present
                 audio_file_path = None  # Track extracted audio file path
+                audio_filename = None  # Track filename for resume state
 
                 if audio_column in example:
                     audio_data = example[audio_column]
@@ -541,24 +600,60 @@ class HFClient:
                         example[audio_column] = str(dest_path)
 
                 # Save metadata as JSON (without audio bytes, just path reference)
+                # Use atomic file operation: write to temp file first, then rename
+                json_path_tmp = json_dir / f"{idx}.json.tmp"
                 json_path = json_dir / f"{idx}.json"
-                with open(json_path, "w") as f:
+                with open(json_path_tmp, "w") as f:
                     # Convert to JSON-serializable format (bytes already removed above)
                     json.dump(self._make_json_serializable(example), f, indent=2)
+                # Atomic rename
+                json_path_tmp.replace(json_path)
                 json_files += 1
-                downloaded_files += 1
+                newly_downloaded += 1
+
+                # Mark row as complete for resume
+                if spec:
+                    from hugflow.storage import StorageManager
+
+                    storage = StorageManager(self.config)
+                    # Get audio filename if available
+                    if audio_column in example and example[audio_column]:
+                        audio_filename = Path(example[audio_column]).name
+                    else:
+                        audio_filename = None
+
+                    storage.mark_row_complete(
+                        spec,
+                        idx,
+                        audio_filename=audio_filename,
+                        json_filename=f"{idx}.json",
+                        expected_total=total_files,
+                    )
 
                 # Progress callback
                 if progress_callback and idx % self.config.download.progress_interval == 0:
-                    progress_callback(downloaded_files, total_files, f"Processing row {idx}")
+                    total_done = len(completed_rows) + newly_downloaded
+                    progress_callback(total_done, total_files, f"Processing row {idx}")
 
             except Exception as e:
                 log.warning("Failed to process row", row=idx, error=str(e))
+
+                # Mark as incomplete for recovery
+                if spec:
+                    from hugflow.storage import StorageManager
+
+                    storage = StorageManager(self.config)
+                    storage.mark_row_incomplete(spec, idx)
+
                 continue
+
+        # Update final counts
+        downloaded_files = len(completed_rows) + newly_downloaded
 
         log.info(
             "Streaming dataset download complete",
             downloaded_files=downloaded_files,
+            newly_downloaded=newly_downloaded,
             audio_files=audio_files,
             json_files=json_files,
             total_size=total_size,
@@ -570,6 +665,8 @@ class HFClient:
             "audio_files": audio_files,
             "json_files": json_files,
             "total_size": total_size,
+            "resumed_from": resume_from,
+            "newly_downloaded": newly_downloaded,
         }
 
     def _process_in_memory_dataset(
@@ -580,23 +677,56 @@ class HFClient:
         audio_column: str,
         text_column: str,
         progress_callback=None,
+        resume_from: int = 0,
+        completed_rows: Optional[Set[int]] = None,
+        spec=None,  # DatasetSpec for resume tracking
     ) -> Dict[str, Any]:
-        """Process an in-memory dataset."""
+        """Process an in-memory dataset with resume capability."""
         import shutil
 
         log = logger.bind(num_rows=len(dataset))
-        log.info("Processing in-memory dataset")
+        log.info("Processing in-memory dataset", resume_from=resume_from)
+
+        # Initialize resume state
+        if completed_rows is None:
+            completed_rows = set()
 
         downloaded_files = 0
         audio_files = 0
         json_files = 0
         total_size = 0
         total_files = len(dataset)
+        newly_downloaded = 0  # Track new downloads in this session
 
         for idx, example in enumerate(dataset):
+            # Skip already completed rows (from resume state)
+            if idx in completed_rows:
+                log.debug("Skipping completed row (from resume state)", row=idx)
+                continue
+
+            # Also check if files already exist on disk (in case resume state is behind)
+            # This handles cases where process was interrupted before state was saved
+            expected_audio_path = audio_dir / f"{idx}.mp3"
+            expected_json_path = json_dir / f"{idx}.json"
+
+            # Check if both files exist and are non-empty
+            audio_exists = expected_audio_path.exists() and expected_audio_path.stat().st_size > 0
+            json_exists = expected_json_path.exists() and expected_json_path.stat().st_size > 0
+
+            # For rows without audio, only check json file
+            has_audio = audio_column in example
+
+            if (has_audio and audio_exists and json_exists) or (not has_audio and json_exists):
+                log.debug("Skipping already processed row (files exist on disk)", row=idx)
+                # Add to completed rows so we don't check disk again for this row
+                completed_rows.add(idx)
+                downloaded_files += 1
+                continue
+
             try:
                 # Process audio if present
                 audio_file_path = None  # Track extracted audio file path
+                audio_filename = None  # Track filename for resume state
 
                 if audio_column in example:
                     audio_data = example[audio_column]
@@ -741,24 +871,60 @@ class HFClient:
                         example[audio_column] = str(dest_path)
 
                 # Save metadata as JSON (without audio bytes, just path reference)
+                # Use atomic file operation: write to temp file first, then rename
+                json_path_tmp = json_dir / f"{idx}.json.tmp"
                 json_path = json_dir / f"{idx}.json"
-                with open(json_path, "w") as f:
+                with open(json_path_tmp, "w") as f:
                     # Convert to JSON-serializable format (bytes already removed above)
                     json.dump(self._make_json_serializable(example), f, indent=2)
+                # Atomic rename
+                json_path_tmp.replace(json_path)
                 json_files += 1
-                downloaded_files += 1
+                newly_downloaded += 1
+
+                # Mark row as complete for resume
+                if spec:
+                    from hugflow.storage import StorageManager
+
+                    storage = StorageManager(self.config)
+                    # Get audio filename if available
+                    if audio_column in example and example[audio_column]:
+                        audio_filename = Path(example[audio_column]).name
+                    else:
+                        audio_filename = None
+
+                    storage.mark_row_complete(
+                        spec,
+                        idx,
+                        audio_filename=audio_filename,
+                        json_filename=f"{idx}.json",
+                        expected_total=total_files,
+                    )
 
                 # Progress callback
                 if progress_callback and idx % self.config.download.progress_interval == 0:
-                    progress_callback(downloaded_files, total_files, f"Processing row {idx}")
+                    total_done = len(completed_rows) + newly_downloaded
+                    progress_callback(total_done, total_files, f"Processing row {idx}")
 
             except Exception as e:
                 log.warning("Failed to process row", row=idx, error=str(e))
+
+                # Mark as incomplete for recovery
+                if spec:
+                    from hugflow.storage import StorageManager
+
+                    storage = StorageManager(self.config)
+                    storage.mark_row_incomplete(spec, idx)
+
                 continue
+
+        # Update final counts
+        downloaded_files = len(completed_rows) + newly_downloaded
 
         log.info(
             "In-memory dataset download complete",
             downloaded_files=downloaded_files,
+            newly_downloaded=newly_downloaded,
             audio_files=audio_files,
             json_files=json_files,
             total_size=total_size,
@@ -785,6 +951,8 @@ class HFClient:
             "audio_files": audio_files,
             "json_files": json_files,
             "total_size": total_size,
+            "resumed_from": resume_from,
+            "newly_downloaded": newly_downloaded,
         }
 
     def _make_json_serializable(self, obj: Any) -> Any:

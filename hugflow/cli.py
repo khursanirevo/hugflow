@@ -234,6 +234,11 @@ def local_sync(
         help="Path to YAML file to sync",
         exists=True,
     ),
+    force: bool = typer.Option(
+        False,
+        "--force", "-f",
+        help="Force download even if dataset already exists (for re-download or resume testing)",
+    ),
 ):
     """Sync a single dataset locally (for testing)."""
     config: Config = ctx.obj["config"]
@@ -247,7 +252,9 @@ def local_sync(
             result = sync_manager.sync_remove(yaml_file, ci_mode=False)
         else:
             console.print("This is an [green]add[/green] request")
-            result = sync_manager.sync_add(yaml_file, ci_mode=False)
+            if force:
+                console.print("[yellow]Force mode enabled - will re-download even if dataset exists[/yellow]")
+            result = sync_manager.sync_add(yaml_file, ci_mode=False, force=force)
 
         if result["status"] == "success":
             console.print("\n[green]✓ Sync completed successfully![/green]")

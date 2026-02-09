@@ -47,13 +47,14 @@ class SyncManager:
         # Initialize storage directories
         self.storage.initialize_directories()
 
-    def sync_add(self, yaml_path: Path, ci_mode: bool = False) -> dict:
+    def sync_add(self, yaml_path: Path, ci_mode: bool = False, force: bool = False) -> dict:
         """
         Sync a dataset add request.
 
         Args:
             yaml_path: Path to YAML file
             ci_mode: Running in CI mode (GitHub Actions)
+            force: Force download even if dataset already exists
 
         Returns:
             Results dictionary with status and metadata
@@ -82,16 +83,17 @@ class SyncManager:
             log.info("Validating dataset specification")
             self.validator.validate_dataset_spec(spec)
 
-            # Check for duplicates
-            active_datasets = self.storage.get_active_datasets()
-            self.validator.check_duplicates(spec, active_datasets)
+            # Check for duplicates (skip if force mode)
+            if not force:
+                active_datasets = self.storage.get_active_datasets()
+                self.validator.check_duplicates(spec, active_datasets)
 
             # Check storage quota
             storage_usage = self.storage.get_storage_usage()
             self.validator.check_storage_quota(spec, storage_usage["total_bytes"])
 
-            # Check if dataset already exists on disk
-            if self.storage.dataset_exists(spec):
+            # Check if dataset already exists on disk and is complete (skip check if force mode)
+            if not force and self.storage.dataset_exists(spec, check_complete=True):
                 log.info("Dataset already exists, skipping download")
                 existing_path = self.storage.storage_root / spec.storage_name
 
@@ -143,6 +145,13 @@ class SyncManager:
                 else:
                     eta = "Unknown"
 
+                # Load resume state to get accurate counts
+                resume_state = self.storage.load_resume_state(spec)
+                if resume_state:
+                    previously_completed = len(resume_state.completed_rows)
+                else:
+                    previously_completed = 0
+
                 # Save progress
                 progress = {
                     "dataset_name": spec.hf_id,
@@ -154,6 +163,8 @@ class SyncManager:
                     "last_update": datetime.utcnow().isoformat(),
                     "current_file": current_file,
                     "eta": eta,
+                    "resumed_from": previously_completed,
+                    "newly_downloaded": downloaded - previously_completed,
                 }
                 self.storage.save_progress(spec, progress)
 
@@ -193,6 +204,7 @@ class SyncManager:
                 audio_column=spec.audio_column,
                 text_column=spec.text_column,
                 progress_callback=progress_callback,
+                spec=spec,  # Pass spec for resume tracking
             )
 
             elapsed = time.time() - start_time
@@ -221,9 +233,23 @@ class SyncManager:
             except Exception as e:
                 log.warning("Failed to create processed symlink, continuing anyway", error=str(e))
 
-            # Delete progress file if configured
-            if self.config.behavior.cleanup_progress_on_success:
-                self.storage.delete_progress(spec)
+            # Check if download is truly complete before cleanup
+            # Get audio and json file counts for completeness check
+            audio_dir = dataset_path / "audio"
+            json_dir = dataset_path / "json"
+            audio_files = list(audio_dir.glob("*")) if audio_dir.exists() else []
+            json_files = list(json_dir.glob("*")) if json_dir.exists() else []
+
+            if not self.storage.is_download_complete(spec, len(audio_files), len(json_files)):
+                log.warning(
+                    "Download may be incomplete",
+                    reason="Progress file shows incomplete state",
+                    advice="Run sync again to resume",
+                )
+            else:
+                # Delete progress file if configured and download is complete
+                if self.config.behavior.cleanup_progress_on_success:
+                    self.storage.delete_progress(spec)
 
             # Send success notifications
             size_gb = download_result["total_size"] / (1024**3)
