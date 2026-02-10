@@ -5,9 +5,9 @@ Constants and path definitions for Hugflow.
 # Directory paths (relative to git repo root)
 ADD_DIR = "requests/add"
 REMOVE_DIR = "requests/remove"
-STORAGE_ROOT = "./datasets"
+STORAGE_ROOT = "./datasets-new"
 STATE_DIR = ".hugflow-state"
-PROCESSED_ROOT = "/mnt/data/processed"  # Symlink target for processed datasets
+PROCESSED_ROOT = "mnt/data/processed"  # Symlink target for processed datasets
 
 # Manifest files
 ACTIVE_MANIFEST = ".hugflow-state/active.json"

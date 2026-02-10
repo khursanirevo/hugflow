@@ -139,7 +139,7 @@ def test_config_defaults():
     assert config.download.progress_interval == 10000
     assert config.network.max_concurrent_downloads == 5
     assert config.validation.validate_hf_id is True
-    assert config.behavior.auto_merge is True
+    assert config.behavior.auto_merge is False  # Changed default to False
     assert config.logging.level == "INFO"
 
 
