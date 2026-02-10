@@ -1,0 +1,3 @@
+# Test smart progress updates (with fixed env vars)
+hf_id: "Revolab/gemini-repetition"
+description: "Testing first time model"
