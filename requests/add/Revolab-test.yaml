@@ -1,0 +1,5 @@
+hf_id: "Revolab/entities-synthetic"
+description: "My custom dataset-cuba other config"
+revision: "main"
+split: "malaysian"
+update: true
