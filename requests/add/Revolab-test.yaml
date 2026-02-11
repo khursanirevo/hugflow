@@ -1,0 +1,5 @@
+hf_id: "Revolab/synthetic-repetition"
+description: "My custom dataset-cuba other config"
+revision: "main"
+split: "train"
+update: true
