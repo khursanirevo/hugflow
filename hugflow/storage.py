@@ -383,6 +383,8 @@ class StorageManager:
         self,
         spec: DatasetSpec,
         action: str,
+        commit_sha: Optional[str] = None,
+        hf_last_modified: Optional[str] = None,
         **metadata,
     ) -> None:
         """
@@ -391,6 +393,8 @@ class StorageManager:
         Args:
             spec: Dataset specification
             action: Action performed ("add" or "remove")
+            commit_sha: HuggingFace commit SHA (for version tracking)
+            hf_last_modified: HuggingFace last modified timestamp
             **metadata: Additional metadata to store
         """
         log = logger.bind(
@@ -423,8 +427,16 @@ class StorageManager:
                     "download_mode": spec.download_mode,
                     "storage_name": spec.storage_name,
                     "added_at": timestamp,
-                    **metadata,
                 }
+
+                # Add commit tracking if provided
+                if commit_sha is not None:
+                    dataset_entry["commit_sha"] = commit_sha
+                if hf_last_modified is not None:
+                    dataset_entry["hf_last_modified"] = hf_last_modified
+
+                # Add any additional metadata
+                dataset_entry.update(metadata)
 
                 # Check for duplicates
                 active_manifest["datasets"] = [
@@ -493,6 +505,77 @@ class StorageManager:
         except Exception as e:
             logger.error("Failed to read active manifest", error=str(e))
             raise StorageError(f"Failed to read active manifest: {e}") from e
+
+    def check_update_available(
+        self,
+        spec: DatasetSpec,
+        current_commit_sha: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Check if a dataset has a new commit available.
+
+        Args:
+            spec: Dataset specification
+            current_commit_sha: Current commit SHA from HF
+
+        Returns:
+            Dict with update info if available, None otherwise
+        """
+        active_datasets = self.get_active_datasets()
+
+        for dataset in active_datasets:
+            if dataset.get("storage_name") == spec.storage_name:
+                stored_sha = dataset.get("commit_sha")
+                if stored_sha and stored_sha != current_commit_sha:
+                    return {
+                        "old_commit": stored_sha,
+                        "new_commit": current_commit_sha,
+                        "storage_name": spec.storage_name,
+                    }
+                elif not stored_sha:
+                    # No commit SHA stored (backward compatibility)
+                    # Treat as update available since we can't tell
+                    return {
+                        "old_commit": None,
+                        "new_commit": current_commit_sha,
+                        "storage_name": spec.storage_name,
+                    }
+        return None
+
+    def archive_dataset_version(self, spec: DatasetSpec) -> Optional[Path]:
+        """
+        Archive old version of a dataset before update.
+
+        Creates a timestamped archive directory and moves the dataset.
+
+        Args:
+            spec: Dataset specification
+
+        Returns:
+            Path to archived dataset, or None if dataset doesn't exist
+        """
+        storage_name = spec.storage_name
+        dataset_path = self.storage_root / storage_name
+
+        if not dataset_path.exists():
+            logger.info("Dataset path does not exist, nothing to archive", path=str(dataset_path))
+            return None
+
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        archive_name = f"{storage_name}_archived_{timestamp}"
+        archive_path = self.storage_root / archive_name
+
+        try:
+            shutil.move(str(dataset_path), str(archive_path))
+            logger.info(
+                "Dataset archived",
+                old_path=str(dataset_path),
+                archive_path=str(archive_path)
+            )
+            return archive_path
+        except Exception as e:
+            logger.error("Failed to archive dataset", error=str(e))
+            raise StorageError(f"Failed to archive dataset: {e}") from e
 
     def save_progress(
         self,

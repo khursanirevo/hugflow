@@ -3,7 +3,7 @@ Validation logic for Hugflow.
 """
 
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from structlog import get_logger
 
@@ -112,6 +112,7 @@ class AssetValidator:
         self,
         spec: DatasetSpec,
         active_specs: List[Dict],
+        current_commit_sha: Optional[str] = None,
     ) -> None:
         """
         Check for duplicate datasets.
@@ -119,11 +120,12 @@ class AssetValidator:
         Args:
             spec: Dataset specification to check
             active_specs: List of active dataset specifications from manifest
+            current_commit_sha: Current commit SHA from HF (for update detection)
 
         Raises:
             DuplicateDatasetError: If duplicate found
         """
-        log = logger.bind(hf_id=spec.hf_id, storage_name=spec.storage_name)
+        log = logger.bind(hf_id=spec.hf_id, storage_name=spec.storage_name, update=spec.update)
 
         if not self.config.validation.check_duplicates:
             log.debug("Duplicate checking disabled")
@@ -132,6 +134,29 @@ class AssetValidator:
         # Check if storage name already exists
         for active_spec in active_specs:
             if active_spec.get("storage_name") == spec.storage_name:
+                # Check if it's an update scenario
+                if spec.update and current_commit_sha:
+                    stored_sha = active_spec.get("commit_sha")
+                    if stored_sha and stored_sha != current_commit_sha:
+                        # New commit detected, allow update
+                        log.info(
+                            "Update allowed: new commit detected",
+                            old_commit=stored_sha[:8],
+                            new_commit=current_commit_sha[:8]
+                        )
+                        return
+                    elif not stored_sha:
+                        # No commit SHA stored (backward compatibility)
+                        log.info("Update allowed: no commit SHA stored in manifest")
+                        return
+                    else:
+                        # Same commit, still raise duplicate error
+                        log.error("Dataset already at latest commit", existing=active_spec)
+                        raise DuplicateDatasetError(
+                            f"Dataset '{spec.hf_id}' is already at the latest commit. "
+                            f"No update available."
+                        )
+
                 # Verify the dataset actually exists on disk (not just in manifest)
                 from hugflow.storage import StorageManager
                 storage = StorageManager(self.config)
@@ -144,7 +169,8 @@ class AssetValidator:
                 log.error("Duplicate dataset found", existing=active_spec)
                 raise DuplicateDatasetError(
                     f"Dataset '{spec.hf_id}' (subset={spec.subset}, split={spec.split}, "
-                    f"revision={spec.revision}) already exists in storage"
+                    f"revision={spec.revision}) already exists in storage. "
+                    f"To update to a new commit, add 'update: true' to your YAML file."
                 )
 
         log.info("No duplicates found")

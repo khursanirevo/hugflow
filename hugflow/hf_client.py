@@ -245,6 +245,8 @@ class HFClient:
             - audio_files: Number of audio files
             - json_files: Number of JSON files
             - total_size: Total size in bytes
+            - commit_sha: Current commit SHA of the dataset
+            - last_modified: Last modified timestamp
 
         Raises:
             HFDownloadError: If download fails
@@ -258,6 +260,18 @@ class HFClient:
             split=split,
             dest=str(dest),
         )
+
+        # Fetch dataset info first to get commit SHA for version tracking
+        commit_sha = None
+        last_modified = None
+        try:
+            dataset_info = self.get_dataset_info(hf_id, revision)
+            commit_sha = dataset_info.get("sha")
+            last_modified = dataset_info.get("last_modified")
+            log.info("Fetched dataset info for version tracking", commit_sha=commit_sha[:8] if commit_sha else None)
+        except Exception as e:
+            log.warning("Could not fetch dataset info for version tracking", error=str(e))
+
         log.info("Starting dataset download")
 
         # Create destination directories
@@ -377,6 +391,8 @@ class HFClient:
                 resume_from=resume_from,
                 completed_rows=completed_rows,
                 spec=spec,
+                commit_sha=commit_sha,
+                last_modified=last_modified,
             )
         else:
             log.info("Dataset is loaded in memory", num_rows=len(dataset))
@@ -390,6 +406,8 @@ class HFClient:
                 resume_from=resume_from,
                 completed_rows=completed_rows,
                 spec=spec,
+                commit_sha=commit_sha,
+                last_modified=last_modified,
             )
 
     def _process_streaming_dataset(
@@ -403,6 +421,8 @@ class HFClient:
         resume_from: int = 0,
         completed_rows: Optional[Set[int]] = None,
         spec=None,  # DatasetSpec for resume tracking
+        commit_sha: Optional[str] = None,
+        last_modified: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Process a streaming dataset with resume capability."""
         import shutil
@@ -667,6 +687,8 @@ class HFClient:
             "total_size": total_size,
             "resumed_from": resume_from,
             "newly_downloaded": newly_downloaded,
+            "commit_sha": commit_sha,
+            "last_modified": last_modified,
         }
 
     def _process_in_memory_dataset(
@@ -680,6 +702,8 @@ class HFClient:
         resume_from: int = 0,
         completed_rows: Optional[Set[int]] = None,
         spec=None,  # DatasetSpec for resume tracking
+        commit_sha: Optional[str] = None,
+        last_modified: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Process an in-memory dataset with resume capability."""
         import shutil
@@ -953,6 +977,8 @@ class HFClient:
             "total_size": total_size,
             "resumed_from": resume_from,
             "newly_downloaded": newly_downloaded,
+            "commit_sha": commit_sha,
+            "last_modified": last_modified,
         }
 
     def _make_json_serializable(self, obj: Any) -> Any:
@@ -1010,3 +1036,130 @@ class HFClient:
         except Exception as e:
             log.error("Failed to delete local copy", error=str(e))
             raise HFClientError(f"Failed to delete local copy: {e}") from e
+
+    def cleanup_cache(
+        self,
+        hf_id: Optional[str] = None,
+        preserve_days: int = 7,
+    ) -> Dict[str, Any]:
+        """
+        Clean up HuggingFace cache for a specific dataset or all old datasets.
+
+        Args:
+            hf_id: Dataset ID to clean up (None = clean all old cache)
+            preserve_days: Number of days to preserve cache (default: 7)
+
+        Returns:
+            Dictionary with cleanup statistics:
+            - deleted_files: Number of files deleted
+            - freed_space_bytes: Total space freed in bytes
+            - skipped_files: Number of files skipped (too recent)
+        """
+        import os
+        import time
+
+        log = logger.bind(hf_id=hf_id, preserve_days=preserve_days)
+        log.info("Starting cache cleanup")
+
+        # Calculate cutoff time
+        cutoff_time = time.time() - (preserve_days * 24 * 60 * 60)
+
+        # HF cache location
+        cache_root = Path.home() / ".cache" / "huggingface" / "hub"
+
+        if not cache_root.exists():
+            log.warning("HF cache directory not found", cache_root=str(cache_root))
+            return {"deleted_files": 0, "freed_space_bytes": 0, "skipped_files": 0}
+
+        deleted_files = 0
+        freed_space = 0
+        skipped_files = 0
+
+        # Find and clean cache files
+        # HF hub cache stores files in directories named like:
+        # models--org--dataset--<hash>/
+        # datasets--org--dataset--<hash>/
+        if hf_id:
+            # Clean specific dataset cache
+            safe_hf_id = hf_id.replace("/", "--")
+            possible_patterns = [
+                f"datasets--{safe_hf_id}",
+                f"*--{safe_hf_id}",
+            ]
+
+            for pattern in possible_patterns:
+                for cache_dir in cache_root.glob(f"{pattern}*"):
+                    deleted, freed, skipped = self._cleanup_cache_dir(
+                        cache_dir, cutoff_time, log
+                    )
+                    deleted_files += deleted
+                    freed_space += freed
+                    skipped_files += skipped
+        else:
+            # Clean all old cache (dataset-specific)
+            for cache_dir in cache_root.glob("datasets--*"):
+                deleted, freed, skipped = self._cleanup_cache_dir(
+                    cache_dir, cutoff_time, log
+                )
+                deleted_files += deleted
+                freed_space += freed
+                skipped_files += skipped
+
+        log.info(
+            "Cache cleanup complete",
+            deleted_files=deleted_files,
+            freed_space_mb=freed_space / (1024 * 1024),
+            skipped_files=skipped_files,
+        )
+
+        return {
+            "deleted_files": deleted_files,
+            "freed_space_bytes": freed_space,
+            "skipped_files": skipped_files,
+        }
+
+    def _cleanup_cache_dir(
+        self,
+        cache_dir: Path,
+        cutoff_time: float,
+        log,
+    ) -> tuple[int, int, int]:
+        """
+        Clean up a specific cache directory.
+
+        Returns:
+            Tuple of (deleted_files, freed_space, skipped_files)
+        """
+        deleted_files = 0
+        freed_space = 0
+        skipped_files = 0
+
+        if not cache_dir.is_dir():
+            return deleted_files, freed_space, skipped_files
+
+        # Check all files in cache directory
+        for item in cache_dir.rglob("*"):
+            if not item.is_file():
+                continue
+
+            try:
+                mtime = item.stat().st_mtime
+                if mtime < cutoff_time:
+                    size = item.stat().st_size
+                    item.unlink()
+                    deleted_files += 1
+                    freed_space += size
+                else:
+                    skipped_files += 1
+            except Exception as e:
+                log.warning("Failed to process cache file", file=str(item), error=str(e))
+
+        # Try to remove empty directories
+        try:
+            for item in sorted(cache_dir.rglob("*"), key=lambda x: len(x.parts), reverse=True):
+                if item.is_dir() and not any(item.iterdir()):
+                    item.rmdir()
+        except Exception:
+            pass  # Best effort cleanup
+
+        return deleted_files, freed_space, skipped_files

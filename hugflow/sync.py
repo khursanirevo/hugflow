@@ -83,10 +83,19 @@ class SyncManager:
             log.info("Validating dataset specification")
             self.validator.validate_dataset_spec(spec)
 
+            # Get current commit SHA for version tracking (needed for duplicate/update check)
+            current_commit_sha = None
+            try:
+                dataset_info = self.hf_client.get_dataset_info(spec.hf_id, spec.revision)
+                current_commit_sha = dataset_info.get("sha")
+                log.info("Fetched current commit SHA for version tracking", commit_sha=current_commit_sha[:8] if current_commit_sha else None)
+            except Exception as e:
+                log.warning("Could not fetch commit SHA for version tracking", error=str(e))
+
             # Check for duplicates (skip if force mode)
             if not force:
                 active_datasets = self.storage.get_active_datasets()
-                self.validator.check_duplicates(spec, active_datasets)
+                self.validator.check_duplicates(spec, active_datasets, current_commit_sha=current_commit_sha)
 
             # Check storage quota
             storage_usage = self.storage.get_storage_usage()
@@ -94,11 +103,43 @@ class SyncManager:
 
             # Check if dataset already exists on disk and is complete (skip check if force mode)
             if not force and self.storage.dataset_exists(spec, check_complete=True):
-                log.info("Dataset already exists, skipping download")
-                existing_path = self.storage.storage_root / spec.storage_name
+                # Check if this is an update scenario
+                if spec.update and current_commit_sha:
+                    update_info = self.storage.check_update_available(spec, current_commit_sha)
+                    if update_info:
+                        log.info("Update available, archiving old version", update_info=update_info)
+                        # Archive old version
+                        archive_path = self.storage.archive_dataset_version(spec)
+                        if archive_path:
+                            log.info("Old version archived", archive_path=str(archive_path))
+                        # Continue with download (don't return)
+                    else:
+                        log.info("Dataset already at latest commit, skipping download")
+                        existing_path = self.storage.storage_root / spec.storage_name
+                        self.storage.update_manifest(spec, "add", skipped=True, reason="Already at latest commit")
 
-                # Update manifest anyway
-                self.storage.update_manifest(spec, "add", skipped=True, reason="Already exists")
+                        result = {
+                            "status": "success",
+                            "dataset_name": spec.hf_id,
+                            "file_count": 0,
+                            "storage_path": str(existing_path),
+                            "skipped": True,
+                            "reason": "Dataset already at latest commit",
+                        }
+
+                        if ci_mode:
+                            self.gitops.write_results(result)
+                            self.gitops.comment_success(
+                                dataset_name=spec.hf_id,
+                                file_count=0,
+                                storage_path=str(existing_path),
+                            )
+
+                        return result
+                else:
+                    log.info("Dataset already exists, skipping download")
+                    existing_path = self.storage.storage_root / spec.storage_name
+                    self.storage.update_manifest(spec, "add", skipped=True, reason="Already exists")
 
                 result = {
                     "status": "success",
@@ -214,16 +255,41 @@ class SyncManager:
                 file_count=download_result["downloaded_files"],
                 size_bytes=download_result["total_size"],
                 elapsed_seconds=elapsed,
+                commit_sha=download_result.get("commit_sha", "")[:8] if download_result.get("commit_sha") else None,
             )
 
-            # Update manifest
+            # Extract commit SHA and last modified from download result
+            commit_sha = download_result.get("commit_sha")
+            hf_last_modified = download_result.get("last_modified")
+
+            # Update manifest with commit tracking
             self.storage.update_manifest(
                 spec,
                 "add",
                 file_count=download_result["downloaded_files"],
                 size_bytes=download_result["total_size"],
                 download_time_seconds=elapsed,
+                commit_sha=commit_sha,
+                hf_last_modified=hf_last_modified,
             )
+
+            # Cache cleanup after successful update (if configured)
+            # Only clean up on update, not on initial add
+            is_update = spec.update and commit_sha
+            if is_update and self.config.cache.enabled and self.config.cache.cleanup_on_update:
+                log.info("Running cache cleanup after update")
+                try:
+                    cleanup_result = self.hf_client.cleanup_cache(
+                        hf_id=spec.hf_id,
+                        preserve_days=self.config.cache.preserve_days,
+                    )
+                    log.info(
+                        "Cache cleanup completed",
+                        deleted_files=cleanup_result["deleted_files"],
+                        freed_space_mb=cleanup_result["freed_space_bytes"] / (1024 * 1024),
+                    )
+                except Exception as e:
+                    log.warning("Cache cleanup failed, continuing anyway", error=str(e))
 
             # Create symlink in processed directory
             log.info("Creating processed symlink")

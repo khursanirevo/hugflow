@@ -2,10 +2,12 @@
 Constants and path definitions for Hugflow.
 """
 
-# Directory paths (relative to git repo root)
+# Directory paths
+# Note: STORAGE_ROOT uses absolute path to work correctly with GitHub Actions runner
+# which clones repo into a nested work directory
 ADD_DIR = "requests/add"
 REMOVE_DIR = "requests/remove"
-STORAGE_ROOT = "./datasets"
+STORAGE_ROOT = "/home/aisyah/hugflow/datasets"  # Absolute path for consistent location
 STATE_DIR = ".hugflow-state"
 PROCESSED_ROOT = "mnt/data/processed"  # Symlink target for processed datasets
 
