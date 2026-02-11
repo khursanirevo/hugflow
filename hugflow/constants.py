@@ -3,13 +3,13 @@ Constants and path definitions for Hugflow.
 """
 
 # Directory paths
-# Note: STORAGE_ROOT uses absolute path to work correctly with GitHub Actions runner
-# which clones repo into a nested work directory
+# Note: STORAGE_ROOT and STATE_DIR use absolute paths to work correctly with
+# GitHub Actions runner which clones repo into a nested work directory
 ADD_DIR = "requests/add"
 REMOVE_DIR = "requests/remove"
-STORAGE_ROOT = "/home/aisyah/hugflow/datasets"  # Absolute path for consistent location
-STATE_DIR = ".hugflow-state"
-PROCESSED_ROOT = "mnt/data/processed"  # Symlink target for processed datasets
+STORAGE_ROOT = ".datasets"  # Absolute path for consistent location
+STATE_DIR = "/mnt/data/raw/hugflow/.hugflow-state"  # Absolute path for shared state
+PROCESSED_ROOT = "/mnt/data/processed"  # Symlink target for processed datasets
 
 # Manifest files
 ACTIVE_MANIFEST = ".hugflow-state/active.json"
