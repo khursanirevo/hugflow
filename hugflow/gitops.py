@@ -381,7 +381,7 @@ Auto-merging PR...
         suggestion: str = "",
     ) -> None:
         """
-        Post failure comment with error details.
+        Post failure comment with error details and rerun instructions.
 
         Args:
             pr_number: PR number
@@ -402,6 +402,27 @@ Auto-merging PR...
         try:
             pull_request = self.repo.get_pull(pr_number)
 
+            # Build rerun instructions
+            repo_name = self.config.github.repo
+            rerun_section = f"""
+
+---
+
+### 🔄 Manual Retry
+
+**Option 1: Via GitHub Actions UI**
+1. Go to the [Actions tab](https://github.com/{repo_name}/actions)
+2. Find "Hugflow Dataset Sync" workflow
+3. Click "Run workflow"
+4. Enter PR number: `{pr_number}`
+5. Click "Run workflow" button
+
+**Option 2: Via GitHub CLI**
+```bash
+gh workflow run dataset-sync.yml -f pr_number={pr_number}
+```
+"""
+
             comment = f"""### ❌ Failed to download dataset
 
 **Dataset:** {dataset_name}
@@ -416,9 +437,9 @@ Auto-merging PR...
             if suggestion:
                 comment += f"**💡 Suggestion:** {suggestion}\n\n"
 
-            comment += """Please fix the YAML and push a new commit.
+            comment += """Please fix the YAML and push a new commit, or use the retry options below.
 </details>
-"""
+""" + rerun_section
 
             pull_request.create_comment(comment)
             log.info("Failure comment posted successfully")

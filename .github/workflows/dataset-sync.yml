@@ -6,13 +6,19 @@ on:
       - 'requests/add/**'
       - 'requests/remove/**'
     types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to rerun'
+        required: true
+        type: number
 
 permissions:
   contents: write
   pull-requests: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.inputs.pr_number }}
 
 jobs:
   sync:
@@ -25,7 +31,7 @@ jobs:
       - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/pull/{0}/head', inputs.pr_number) || github.event.pull_request.head.sha }}
 
       - name: Install dependencies
         run: uv sync
@@ -35,7 +41,7 @@ jobs:
           HF__TOKEN: ${{ secrets.HF_TOKEN }}
           GITHUB__TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB__REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
         run: |
           uv run python -m hugflow sync --ci-mode --progress-interval=10000
 
@@ -71,38 +77,4 @@ jobs:
               body: comment
             });
 
-      - name: Auto-merge on success
-        if: success()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            // Get PR details to extract branch ref
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.issue.number
-            });
-
-            const branchRef = pr.head.ref;
-
-            // Merge the PR
-            await github.rest.pulls.merge({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.issue.number,
-              commit_title: 'Auto-merge: Dataset download successful',
-              commit_message: 'Automatically merged after successful dataset download.',
-              merge_method: 'merge'
-            });
-
-            // Delete the branch after merge
-            try {
-              await github.rest.git.deleteRef({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                ref: `heads/${branchRef}`
-              });
-              console.log(`✅ Deleted branch: ${branchRef}`);
-            } catch (err) {
-              console.log(`⚠️ Could not delete branch ${branchRef}:`, err.message);
-            }
+ 

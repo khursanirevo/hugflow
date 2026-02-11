@@ -23,6 +23,7 @@ class DatasetSpec(BaseModel):
     split: str = Field(default="train", description="Dataset split name")
     audio_column: str = Field(default="audio", description="Name of audio column")
     text_column: str = Field(default="text", description="Name of text column")
+    update: bool = Field(default=False, description="Allow updating to new commit if SHA changed")
 
     @field_validator("hf_id")
     @classmethod
@@ -161,6 +162,16 @@ class BehaviorConfig(BaseModel):
     auto_merge: bool = Field(default=False, env="AUTO_MERGE")
     auto_cleanup_requests: bool = Field(default=True, env="AUTO_CLEANUP_REQUESTS")
     cleanup_progress_on_success: bool = Field(default=True, env="CLEANUP_PROGRESS_ON_SUCCESS")
+    cleanup_hf_cache: bool = Field(default=False, env="CLEANUP_HF_CACHE")
+
+
+class CacheConfig(BaseModel):
+    """HuggingFace cache cleanup configuration."""
+
+    enabled: bool = Field(default=False, env="CACHE_CLEANUP_ENABLED")
+    cleanup_on_update: bool = Field(default=True, env="CACHE_CLEANUP_ON_UPDATE")
+    cleanup_on_add: bool = Field(default=False, env="CACHE_CLEANUP_ON_ADD")
+    preserve_days: int = Field(default=7, env="CACHE_PRESERVE_DAYS")
 
 
 class Config(BaseSettings):
@@ -183,6 +194,7 @@ class Config(BaseSettings):
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     behavior: BehaviorConfig = Field(default_factory=BehaviorConfig)
+    cache: CacheConfig = Field(default_factory=CacheConfig)
 
     @model_validator(mode="after")
     def validate_tokens(self) -> "Config":
