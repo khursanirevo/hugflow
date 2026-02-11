@@ -1,0 +1,5 @@
+hf_id: "Revolab/label-studio-completed"
+description: "Dataset for zipformer iteration baseline"
+revision: "main"
+subset: "22_Autolabel_-_ASR_Transcription_Review"
+update: true
