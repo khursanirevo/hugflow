@@ -824,7 +824,7 @@ class HFClient:
                                 filename = Path(example[filename_field]).stem  # Remove extension, will add .mp3
                             elif "filename" in audio_data:
                                 filename = Path(audio_data["filename"]).stem
-                            elif "path" in audio_data:
+                            elif "path" in audio_data and audio_data["path"]:
                                 filename = Path(audio_data["path"]).stem
                             else:
                                 filename = f"{idx}"
@@ -848,13 +848,29 @@ class HFClient:
                             example[audio_column] = str(dest_path)
                         # Handle dict with path field (file reference only, no bytes)
                         elif "path" in audio_data:
-                            src_path = Path(audio_data["path"])
-                            if src_path.exists():
-                                # Use the filename stem from path, add .mp3 extension
-                                filename = src_path.stem
+                            if audio_data['path']:
+                                src_path = Path(audio_data["path"])
+                                if src_path.exists():
+                                    # Use the filename stem from path, add .mp3 extension
+                                    filename = src_path.stem
+                                    mp3_filename = f"{filename}.mp3"
+                                    dest_path = audio_dir / mp3_filename
+                                    # Convert to MP3 with safe settings
+                                    try:
+                                        dest_path = convert_to_mp3(src_path, dest_path, bitrate="192k")
+                                        audio_files += 1
+                                        total_size += dest_path.stat().st_size
+                                        downloaded_files += 1
+                                    except Exception as e:
+                                        log.warning("Failed to convert audio file to MP3", path=str(src_path), error=str(e))
+                                        raise
+                                    # Replace audio field with just the path string
+                                    example[audio_column] = str(dest_path)
+                            else:
+                                filename = f"{idx}"
                                 mp3_filename = f"{filename}.mp3"
                                 dest_path = audio_dir / mp3_filename
-                                # Convert to MP3 with safe settings
+                                 # Convert to MP3 with safe settings
                                 try:
                                     dest_path = convert_to_mp3(src_path, dest_path, bitrate="192k")
                                     audio_files += 1
